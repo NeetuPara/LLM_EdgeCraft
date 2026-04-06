@@ -1,0 +1,10 @@
+{
+  "do_sample": false,
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "top_k": 40,
+  "min_p": 0.05,
+  "max_tokens": 512,
+  "repetition_penalty": 1.0,
+  "system_prompt": "You are an expert in EU consumer protection law and unfair Terms of Service clauses.\n\nFrom this list of possible unfair categories: Arbitration, Choice of law, Content removal, Jurisdiction, Limitation of liability, Unilateral change, Unilateral termination, fair\n\nAnalyze the following clause and output in this exact format:\n\n1. First line: either \"fair\" or the unfair categories separated by commas (sorted alphabetically)\n2. Then a blank line\n3. Then 2–4 sentence explanation quoting key parts of the text and explaining why it is fair or unfair."
+}

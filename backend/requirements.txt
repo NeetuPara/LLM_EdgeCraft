@@ -1,0 +1,48 @@
+# EdgeCraft Backend Requirements
+#
+# CORRECT INSTALL ORDER (do NOT just pip install -r this directly):
+#   1. pip install unsloth
+#      (installs transformers, trl, peft, datasets -- but pulls CPU-only torch from PyPI)
+#   2. pip install torch==2.7.0+cu128 torchvision torchaudio \
+#         --index-url https://download.pytorch.org/whl/cu128 \
+#         --force-reinstall --no-deps
+#      (restores CUDA torch that unsloth replaced -- CRITICAL step)
+#   3. pip install -r requirements.txt
+#
+# WHY: unsloth's dependency resolver pulls torch from PyPI (CPU-only).
+#      Step 2 force-reinstalls the CUDA build without re-triggering that resolver.
+#
+# Use .\scripts\install.ps1 (Windows) or ./scripts/install.sh (Linux/Mac)
+# which handles this automatically.
+
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# Auth (no passlib/bcrypt — uses stdlib PBKDF2)
+python-jose[cryptography]>=3.3.0
+
+# Database (SQLite built-in, SQLAlchemy for ORM)
+sqlalchemy>=2.0.0
+
+# Config & utilities
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+structlog>=24.0.0
+psutil>=5.9.0
+nest-asyncio>=1.6.0
+
+# HTTP client (inference streaming)
+httpx>=0.27.0
+requests>=2.31.0
+
+# GPU monitoring
+pynvml>=11.5.0
+
+# ML / HuggingFace (torch+unsloth installed by script first)
+datasets>=3.4.1
+huggingface_hub>=0.34.0
+matplotlib>=3.7.0
+pyyaml>=6.0.0

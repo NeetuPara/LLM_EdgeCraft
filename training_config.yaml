@@ -1,0 +1,113 @@
+# ═══════════════════════════════════════════════════════════════
+#  UnslothCraft — Training Configuration
+#  Edit values below, then upload in the Hyperparameters page.
+#  Only keys you provide will be applied. Unknown keys are ignored.
+# ═══════════════════════════════════════════════════════════════
+
+# ── Essential ───────────────────────────────────────────────────
+
+num_epochs: 1
+# Full passes over the dataset.
+# Small dataset (<5K rows)  → 3–5 epochs
+# Medium dataset (5K–50K)   → 2–3 epochs
+# Large dataset (50K+)      → 1 epoch
+
+max_steps: 0
+# Override epochs: stop after exactly N optimizer steps.
+# 0 = disabled (use num_epochs instead)
+# Quick test: 50–100   Real training: 500–2000
+
+learning_rate: 2e-4
+# QLoRA (4-bit)  → 2e-4  (default)
+# LoRA (16-bit)  → 5e-5 to 1e-4
+# Full fine-tune → 1e-5 to 5e-5
+
+batch_size: 2
+# Samples processed per step.
+# Effective batch = batch_size × gradient_accumulation_steps
+# Reduce to 1 if you get CUDA Out-of-Memory.
+
+max_seq_length: 2048
+# Context window in tokens.
+# Short Q&A / Alpaca  → 2048
+# Conversations/code  → 4096
+# Long documents      → 8192
+# VRAM scales quadratically — 4096 ≈ 4× more than 2048.
+
+lr_scheduler_type: cosine
+# cosine     → Best for most tasks (smooth decay to near-zero)
+# linear     → Simpler, good for short runs
+# constant   → Flat LR, use with max_steps for quick tests
+# polynomial → Fine-grained control over decay shape
+
+# ── LoRA ────────────────────────────────────────────────────────
+
+lora_r: 32
+# LoRA rank — controls adapter capacity.
+# r=16  → Fast experiments, lower quality
+# r=32  → Recommended for <7B models  (default)
+# r=64  → Maximum quality, more VRAM
+
+lora_alpha: 32
+# Scaling factor = alpha / r.
+# Set equal to lora_r  → standard (1:1 ratio)
+# Set to 2 × lora_r   → stronger LoRA effect
+# Rule of thumb: keep alpha = lora_r unless experimenting.
+
+lora_dropout: 0.0
+# Dropout on LoRA layers.
+# Keep at 0 — Unsloth's Triton kernels don't support non-zero well.
+
+use_rslora: true
+# Rank-Stabilised LoRA: uses √r scaling instead of r.
+# Free quality improvement at r ≥ 32. No speed or VRAM cost.
+# Recommended: true
+
+train_on_completions: true
+# Compute loss only on assistant responses, not instruction tokens.
+# Model learns HOW to answer, not to repeat the question.
+# Recommended: true for all instruction/chat datasets.
+
+# ── Advanced ────────────────────────────────────────────────────
+
+gradient_accumulation_steps: 4
+# Accumulate gradients over N steps before updating weights.
+# Simulates a larger effective batch without extra VRAM.
+# Effective batch = batch_size × gradient_accumulation_steps
+# Default: 4  (effective batch = 2×4 = 8)
+
+warmup_steps: 5
+# Linearly ramp LR from 0 to target for the first N steps.
+# Prevents unstable gradients at the very start of training.
+# Typical: 5–50 steps
+
+weight_decay: 0.01
+# L2 regularisation — penalises large weights.
+# Helps prevent overfitting on small datasets.
+# Range: 0.0 (off) to 0.1. Default: 0.01
+
+save_strategy: no
+# When to save checkpoints during training.
+# no    → save only at the very end (recommended — avoids disk errors)
+# epoch → save after every epoch
+# steps → save every N steps (set save_steps below)
+
+save_steps: 0
+# Save a checkpoint every N steps (only used when save_strategy: steps).
+# Use 200–500 for long runs to recover from crashes.
+
+optimizer: adamw_8bit
+# adamw_8bit   → Recommended — same quality as FP32 AdamW, 75% less VRAM
+# adamw_torch  → Full precision AdamW (more VRAM, slightly more stable)
+# lion_8bit    → Experimental, aggressive updates
+# sgd          → Classic SGD (rarely used for LLM fine-tuning)
+
+packing: false
+# Pack multiple short samples into one sequence to eliminate padding.
+# true  → 30–50% speedup on short Q&A / Alpaca datasets
+# false → Safer default; required for long documents or code
+
+gradient_checkpointing: unsloth
+# unsloth → Unsloth's optimised checkpointing (recommended)
+# true    → Standard PyTorch gradient checkpointing
+# none    → Disabled (uses more VRAM, faster forward pass)
