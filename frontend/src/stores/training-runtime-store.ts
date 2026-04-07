@@ -51,8 +51,8 @@ interface TrainingRuntimeState {
     status_message?: string
     metrics?: {
       step: number[]; loss: number[]
-      eval_loss: number[]; learning_rate: number[]
-      grad_norm: number[]
+      eval_loss: number[]; eval_steps: number[]   // eval_steps = X positions for eval_loss
+      learning_rate: number[]; grad_norm: number[]
     }
   }) => void
   reset: () => void
@@ -115,9 +115,13 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeState>()((set) => (
     const lossHistory: MetricPoint[] = metrics
       ? metrics.step.map((s, i) => ({ step: s, value: metrics.loss[i] })).filter(p => p.value > 0)
       : []
-    const evalLossHistory: MetricPoint[] = metrics
-      ? metrics.step.map((s, i) => ({ step: s, value: metrics.eval_loss[i] })).filter(p => p.value > 0)
-      : []
+    // eval_steps and eval_loss are parallel sparse arrays (same length, ≠ step array).
+    // Using metrics.step as the index source maps eval values to the WRONG steps.
+    const evalSteps: number[]   = metrics?.eval_steps ?? []
+    const evalVals:  number[]   = metrics?.eval_loss   ?? []
+    const evalLossHistory: MetricPoint[] = evalSteps
+      .map((s: number, i: number) => ({ step: s, value: evalVals[i] }))
+      .filter((p: MetricPoint) => p.value != null && isFinite(p.value as number) && (p.value as number) > 0)
     const lrHistory: MetricPoint[] = metrics
       ? metrics.step.map((s, i) => ({ step: s, value: metrics.learning_rate[i] }))
       : []

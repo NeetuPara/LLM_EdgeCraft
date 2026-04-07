@@ -84,6 +84,7 @@ export function useRealTrainingPoller() {
                 step: mh.steps ?? [],
                 loss: mh.loss ?? [],
                 eval_loss: mh.eval_loss ?? [],
+                eval_steps: mh.eval_steps ?? [],   // X positions for eval loss points
                 learning_rate: mh.lr ?? [],
                 grad_norm: mh.grad_norm ?? [],
               },

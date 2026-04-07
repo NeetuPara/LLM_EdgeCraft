@@ -496,10 +496,11 @@ def _run_vlm_training(event_queue, stop_queue, config: dict) -> None:
                 return
             step  = state.global_step
             total = state.max_steps or 1
-            loss     = logs.get("loss")
-            lr       = logs.get("learning_rate")
+            loss      = logs.get("loss")
+            lr        = logs.get("learning_rate")
             grad_norm = logs.get("grad_norm")
-            epoch    = logs.get("epoch", 0)
+            epoch     = logs.get("epoch", 0)
+            eval_loss = logs.get("eval_loss")  # non-None only when eval runs
 
             # "progress" is the event type the pump loop (_handle_event) expects
             event_queue.put({
@@ -510,6 +511,7 @@ def _run_vlm_training(event_queue, stop_queue, config: dict) -> None:
                 "loss":          loss,
                 "learning_rate": lr,
                 "grad_norm":     grad_norm,
+                "eval_loss":     eval_loss,
                 "ts":            time.time(),
             })
 
@@ -530,6 +532,10 @@ def _run_vlm_training(event_queue, stop_queue, config: dict) -> None:
     num_epochs = config.get("num_epochs", 2)
     max_steps  = config.get("max_steps", 0)
 
+    _vlm_save_strategy = config.get("save_strategy", "no")
+    # Align eval_strategy with save_strategy so eval runs at the same cadence
+    _vlm_eval_strategy = "epoch" if _vlm_save_strategy in ("best", "epoch") else "no"
+
     training_args = TrainingArguments(
         output_dir                  = output_dir,
         num_train_epochs            = num_epochs if not max_steps else 1,
@@ -546,8 +552,9 @@ def _run_vlm_training(event_queue, stop_queue, config: dict) -> None:
         logging_steps               = 10,
         seed                        = config.get("random_seed", 3407),
         report_to                   = "none",
-        save_strategy               = config.get("save_strategy", "no"),
+        save_strategy               = _vlm_save_strategy,
         save_steps                  = config.get("save_steps") or 250,
+        eval_strategy               = _vlm_eval_strategy if eval_dataset is not None else "no",
         remove_unused_columns       = False,   # CRITICAL: keeps image column in dataset
         dataloader_num_workers      = 0,       # Windows: cannot pickle closures across processes
         dataloader_pin_memory       = False,   # Windows: cannot pin non-CUDA tensors
@@ -937,12 +944,20 @@ def run_training_process(
 
         # Add eval settings when eval dataset is available
         if eval_dataset is not None:
-            if save_strategy == "best":
-                # Early stopping requires eval_strategy to match save_strategy (both "epoch")
+            if save_strategy in ("best", "epoch"):
+                # Eval after every epoch — matches save cadence so charts and
+                # checkpoints are aligned. "best" also requires epoch-level eval
+                # for EarlyStoppingCallback to compare across epochs.
                 sft_kwargs["eval_strategy"] = "epoch"
+            elif save_strategy == "steps" and config.get("save_steps"):
+                # Eval at the same step interval as saving
+                sft_kwargs["eval_strategy"] = "steps"
+                sft_kwargs["eval_steps"] = config.get("save_steps")
             else:
-                # Evaluate every 20% of training (5 eval points per run)
-                total_steps_est = max(1, len(dataset) // max(config.get("batch_size", 2) * config.get("gradient_accumulation_steps", 4), 1))
+                # Fallback: evaluate every 20% of training (5 eval points per run)
+                total_steps_est = max(1, len(dataset) // max(
+                    config.get("batch_size", 2) * config.get("gradient_accumulation_steps", 4), 1
+                ))
                 eval_every = max(10, total_steps_est // 5)
                 sft_kwargs["eval_strategy"] = "steps"
                 sft_kwargs["eval_steps"] = eval_every
