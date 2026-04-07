@@ -74,24 +74,42 @@ function estimateResources(
   config: ReturnType<typeof useTrainingConfigStore.getState>,
   datasetRows?: number,
 ) {
-  const params = getParamBillions(config.modelName)
-  // Rough 4-bit weight size: ~0.5 GB per billion params
-  // QLoRA adds ~20% overhead, LoRA ~2.2x (16-bit activations), full ~4.5x
-  const baseGb = Math.max(1, params * 0.55)
-  const mult = config.trainingMethod === 'qlora' ? 1.2 : config.trainingMethod === 'lora' ? 2.2 : 4.5
-  const vramGb = Math.ceil(baseGb * mult)
+  const params   = getParamBillions(config.modelName)
+  const isVision = config.modelType === 'vision'
 
-  // Time estimate using real dataset row count if available
-  const epochs = config.maxSteps > 0 ? 1 : config.numEpochs
+  // ── VRAM estimate ────────────────────────────────────────────────────────
+  // Text: ~0.55 GB/B params as base weight; VLM adds vision encoder (~0.8 GB)
+  // and PyTorch allocator + image preprocessing overhead (0.8 GB/sample + 1.5 GB fixed).
+  const baseGb  = Math.max(0.5, params * 0.55)
+  const mult    = config.trainingMethod === 'qlora' ? 1.2
+                : config.trainingMethod === 'lora'  ? 2.2
+                : 4.5
+  let vramGb = Math.ceil(baseGb * mult)
+
+  if (isVision) {
+    const visionEncoderGb   = 0.8                              // SigLIP/CLIP bf16
+    const batchImageOverhead = (config.batchSize || 2) * 0.8   // 0.8 GB/sample
+    const fixedVlmOverhead  = 1.5                              // allocator + kernel buffers
+    vramGb = Math.ceil(vramGb + visionEncoderGb + batchImageOverhead + fixedVlmOverhead)
+  }
+
+  // ── Time estimate ────────────────────────────────────────────────────────
+  const epochs       = config.maxSteps > 0 ? 1 : config.numEpochs
   const effectiveBatch = (config.batchSize || 2) * (config.gradAccumSteps || 4)
-  const rowsPerEpoch = datasetRows && datasetRows > 0
-    ? datasetRows
-    : 1000   // fallback if rows unknown
-  const estSteps = config.maxSteps > 0
+  const rowsPerEpoch = (datasetRows && datasetRows > 0) ? datasetRows : 1000
+  const estSteps     = config.maxSteps > 0
     ? config.maxSteps
     : Math.ceil((rowsPerEpoch / effectiveBatch) * epochs)
-  // Steps/min heuristics by training method and model size
-  const baseStepsPerMin = config.trainingMethod === 'full' ? 2 : params <= 1 ? 30 : params <= 3 ? 18 : params <= 7 ? 10 : 5
+
+  // VLM is ~2× slower than text: vision encoder forward + image token processing.
+  // Empirically: SmolVLM-500M on RTX 5080 Laptop → ~16 steps/min.
+  // Text model (Gemma-3-1B) on same GPU → ~27 steps/min.
+  const baseStepsPerMin = config.trainingMethod === 'full'
+    ? 2
+    : isVision
+      ? (params <= 1 ? 15 : params <= 3 ? 8 : 4)   // VLM: ~2× slower
+      : (params <= 1 ? 30 : params <= 3 ? 18 : params <= 7 ? 10 : 5)
+
   const minutes = Math.ceil(estSteps / baseStepsPerMin)
 
   return { vramGb, minutes, estSteps }

@@ -18,6 +18,29 @@ from typing import Dict, Optional
 QUANT_4BIT_FACTOR = 16 / 5
 CUDA_OVERHEAD_BYTES = int(1.4 * 1024**3)  # calibrated on RTX 5070 Ti
 
+# ── VLM-specific overhead constants ──────────────────────────────────────────
+# VLM training has large, hard-to-formulaically-capture memory costs beyond
+# the base model+LoRA+optimizer formula:
+#
+#   1. pixel_values tensor per batch sample:
+#      shape = (batch, max_tiles, 3, tile_h, tile_w) at bf16
+#      SmolVLM: (3, 4, 3, 384, 384) bf16 → ~100 MB raw, but PyTorch allocator
+#      caches 3-5× that due to intermediate resize/normalize buffers.
+#
+#   2. PyTorch memory allocator caching:
+#      torch.cuda.memory_reserved() >> memory_allocated() for large VLM batches.
+#      nvidia-smi reports reserved (not just allocated), adding ~1-2 GB.
+#
+#   3. Recomputation buffers during backward (gradient checkpointing):
+#      For image-token sequences (1944+ tokens), recomputing one layer's
+#      attention is 3-5× costlier than for a text-only 2048-token sequence.
+#
+# Empirically calibrated: SmolVLM-500M, batch=3, seq=2048, RTX 5080 Laptop
+#   Formula without VLM correction: ~2.8 GB  │  Actual: 7.0 GB
+#   Correction = 0.8 GB/sample × batch + 1.5 GB fixed → adds ~4.0 GB
+VLM_OVERHEAD_PER_SAMPLE_BYTES = int(0.8 * 1024**3)  # per batch sample
+VLM_OVERHEAD_FIXED_BYTES      = int(1.5 * 1024**3)  # fixed infrastructure
+
 DEFAULT_TARGET_MODULES = [
     "q_proj",
     "k_proj",
@@ -452,15 +475,74 @@ def compute_activation_bytes(
     return int(per_layer_bytes * effective_layers)
 
 
+def _estimate_vision_encoder_bytes(vision_config) -> int:
+    """
+    Estimate bytes for a VLM vision encoder (SigLIP, CLIP, ViT variants).
+    Vision encoders are always kept in bf16 even during QLoRA training —
+    they are never 4-bit quantized.
+
+    Rough formula: (patch_embed + transformer_layers + projection) * 2 bytes
+
+    For SmolVLM-500M: SigLIP ViT hidden=1152, layers=27 → ~400M params → ~800MB
+    """
+    if vision_config is None:
+        return 0
+    hd   = getattr(vision_config, "hidden_size",       1152)
+    nl   = getattr(vision_config, "num_hidden_layers",  27)
+    ih   = getattr(vision_config, "intermediate_size",  4304)
+    nh   = getattr(vision_config, "num_attention_heads", 16)
+    vs   = getattr(vision_config, "image_size",          384)
+    ps   = getattr(vision_config, "patch_size",           14)
+
+    num_patches = (vs // ps) ** 2 + 1          # +1 for CLS token
+    patch_embed = ps * ps * 3 * hd             # patch projection
+    attn_per_layer  = 4 * hd * hd              # Q/K/V/O approx
+    mlp_per_layer   = 2 * hd * ih              # up + down
+    per_layer       = attn_per_layer + mlp_per_layer
+    layer_norms     = 2 * hd * nl
+
+    vision_params   = patch_embed + per_layer * nl + layer_norms
+    # projection connector between vision and LM (1–2 linear layers ~hd*lm_hidden)
+    vision_params  += hd * hd * 2
+
+    return int(vision_params * 2)              # bf16 = 2 bytes/param
+
+
+def _vlm_seq_len_multiplier(vision_config, max_seq_length: int) -> float:
+    """
+    VLM training sequences are much longer than max_seq_length because image
+    tiles produce many tokens.  SmolVLM uses ~81 tokens per 384×384 tile.
+    With a 512×512 input tiled into ~4 patches: 4×81 = 324 image tokens alone.
+    Activations scale linearly with sequence length, so we scale up accordingly.
+    """
+    if vision_config is None:
+        return 1.0
+    image_size  = getattr(vision_config, "image_size",  384)
+    patch_size  = getattr(vision_config, "patch_size",   14)
+    tokens_per_tile = (image_size // patch_size) ** 2   # e.g. 27² = 729 for SigLIP
+    # SmolVLM compresses tile tokens; empirically ~81 output tokens per tile
+    compressed = min(tokens_per_tile, 81)
+    # Assume 1 image per sample, ~2-4 tiles for typical input sizes
+    image_tokens = compressed * 3                        # conservative 3 tiles
+    effective_seq = max_seq_length + image_tokens
+    return effective_seq / max(max_seq_length, 1)
+
+
 def estimate_training_vram(
     arch: ModelArchConfig,
     config: TrainingVramConfig,
+    vision_config=None,           # pass HF vision_config for VLM models
 ) -> VramBreakdown:
     method = config.training_method.lower()
     is_lora = method in ("qlora", "lora")
     load_in_4bit = config.load_in_4bit or method == "qlora"
 
+    # ── Text / LM weights ──
     model_weights = compute_model_weights_bytes(arch, method, load_in_4bit)
+
+    # ── Vision encoder bytes (bf16, never quantized) ──
+    vision_bytes = _estimate_vision_encoder_bytes(vision_config)
+    model_weights += vision_bytes
 
     lora_params = 0
     lora_adapter_bytes = 0
@@ -478,24 +560,39 @@ def estimate_training_vram(
         compute_gradient_bytes(trainable_params),
         int(model_weights * 0.15),
     )
+
+    # ── Activations — scale seq_len for VLM image tokens ──
+    vlm_mult = _vlm_seq_len_multiplier(vision_config, config.max_seq_length)
+    effective_seq = int(config.max_seq_length * vlm_mult)
+
     activations_computed = compute_activation_bytes(
         arch,
         config.batch_size,
-        config.max_seq_length,
+        effective_seq,
         config.gradient_checkpointing,
-        is_lora = is_lora,
+        is_lora=is_lora,
     )
     activation_bytes = max(
         activations_computed,
         int(model_weights * 0.15 * (config.batch_size / 2)),
     )
 
+    # ── VLM overhead: batch × image preprocessing + allocator caching ──
+    # Applied to activations because these costs manifest as activation-like
+    # peak usage during forward+backward passes on image-token sequences.
+    if vision_config is not None:
+        vlm_extra = (
+            VLM_OVERHEAD_PER_SAMPLE_BYTES * config.batch_size
+            + VLM_OVERHEAD_FIXED_BYTES
+        )
+        activation_bytes += vlm_extra
+
     return VramBreakdown(
-        model_weights = model_weights,
-        lora_adapters = lora_adapter_bytes,
-        optimizer_states = optimizer_bytes,
-        gradients = gradient_bytes,
-        activations = activation_bytes,
-        cuda_overhead = CUDA_OVERHEAD_BYTES,
-        activations_computed = activations_computed,
+        model_weights=model_weights,
+        lora_adapters=lora_adapter_bytes,
+        optimizer_states=optimizer_bytes,
+        gradients=gradient_bytes,
+        activations=activation_bytes,
+        cuda_overhead=CUDA_OVERHEAD_BYTES,
+        activations_computed=activations_computed,
     )

@@ -11,6 +11,7 @@ export default defineConfig({
   },
   server: {
     port: 5174,
+    host: true,   // bind to 0.0.0.0 — required for LAN / tunnel access
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8001',   // UnslothCraft backend

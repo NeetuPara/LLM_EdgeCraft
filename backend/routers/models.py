@@ -320,37 +320,51 @@ class VramEstimateRequest(BaseModel):
     hf_token: Optional[str] = None
 
 
+def _build_cfg_obj(raw: dict):
+    """Convert a raw config dict to a namespace object.
+    Also nests text_config and vision_config as sub-objects."""
+    class _Cfg:
+        pass
+
+    def _to_obj(d: dict):
+        o = _Cfg()
+        for k, v in d.items():
+            setattr(o, k, v)
+        return o
+
+    obj = _to_obj(raw)
+    if hasattr(obj, "text_config") and isinstance(obj.text_config, dict):
+        obj.text_config = _to_obj(obj.text_config)
+    if hasattr(obj, "vision_config") and isinstance(obj.vision_config, dict):
+        obj.vision_config = _to_obj(obj.vision_config)
+    return obj
+
+
 def _fetch_model_arch(model_name: str, hf_token: Optional[str]):
-    """Fetch model config.json and extract architecture params.
-    Checks HF cache first, falls back to downloading config only."""
+    """Fetch model config.json and extract architecture params + optional vision_config.
+    Returns (arch, vision_config) tuple. vision_config is None for text-only models."""
     import json
-    from utils.hardware.vram_estimation import extract_arch_config, ModelArchConfig
+    from utils.hardware.vram_estimation import extract_arch_config
+
+    def _parse(raw: dict):
+        obj = _build_cfg_obj(raw)
+        arch = extract_arch_config(obj)
+        vision_cfg = getattr(obj, "vision_config", None)
+        return arch, vision_cfg
 
     # 1. Try HF cache — find config.json in snapshots
     for cache_dir in _hf_cache_dirs():
         cache_key = "models--" + model_name.replace("/", "--")
         model_dir = cache_dir / cache_key
         if model_dir.exists():
-            for snap in (model_dir / "snapshots").iterdir() if (model_dir / "snapshots").exists() else []:
+            snaps_dir = model_dir / "snapshots"
+            for snap in (snaps_dir.iterdir() if snaps_dir.exists() else []):
                 cfg_path = snap / "config.json"
                 if cfg_path.exists():
                     try:
-                        raw = json.loads(cfg_path.read_text())
-                        # Build a simple namespace so extract_arch_config works
-                        class _Cfg:
-                            pass
-                        obj = _Cfg()
-                        for k, v in raw.items():
-                            setattr(obj, k, v)
-                        # Handle text_config nesting (VLMs)
-                        if hasattr(obj, "text_config") and isinstance(obj.text_config, dict):
-                            tc = _Cfg()
-                            for k, v in obj.text_config.items():
-                                setattr(tc, k, v)
-                            obj.text_config = tc
-                        arch = extract_arch_config(obj)
+                        arch, vision_cfg = _parse(json.loads(cfg_path.read_text()))
                         if arch:
-                            return arch
+                            return arch, vision_cfg
                     except Exception:
                         pass
 
@@ -362,24 +376,13 @@ def _fetch_model_arch(model_name: str, hf_token: Optional[str]):
             filename="config.json",
             token=hf_token or None,
         )
-        raw = json.loads(Path(cfg_path).read_text())
-        class _Cfg:
-            pass
-        obj = _Cfg()
-        for k, v in raw.items():
-            setattr(obj, k, v)
-        if hasattr(obj, "text_config") and isinstance(obj.text_config, dict):
-            tc = _Cfg()
-            for k, v in obj.text_config.items():
-                setattr(tc, k, v)
-            obj.text_config = tc
-        arch = extract_arch_config(obj)
+        arch, vision_cfg = _parse(json.loads(Path(cfg_path).read_text()))
         if arch:
-            return arch
+            return arch, vision_cfg
     except Exception as e:
         logger.debug("hf_hub_download config failed: %s", e)
 
-    return None
+    return None, None
 
 
 @router.post("/vram-estimate")
@@ -392,7 +395,7 @@ def vram_estimate(body: VramEstimateRequest, _user=Depends(get_current_user)):
         TrainingVramConfig, estimate_training_vram,
     )
 
-    arch = _fetch_model_arch(body.model_name, body.hf_token)
+    arch, vision_cfg = _fetch_model_arch(body.model_name, body.hf_token)
     if arch is None:
         raise HTTPException(
             422,
@@ -411,9 +414,10 @@ def vram_estimate(body: VramEstimateRequest, _user=Depends(get_current_user)):
         load_in_4bit=body.load_in_4bit,
     )
 
-    breakdown = estimate_training_vram(arch, train_cfg)
+    breakdown = estimate_training_vram(arch, train_cfg, vision_config=vision_cfg)
     return {
         "total_gb": round(breakdown.total / 1024**3, 2),
         "breakdown": breakdown.to_gb_dict(),
         "model_name": body.model_name,
+        "is_vlm": vision_cfg is not None,
     }

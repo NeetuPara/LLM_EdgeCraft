@@ -42,6 +42,42 @@ function ChartTooltip({ active, payload, label, valueLabel, decimals = 4 }: {
   )
 }
 
+// ── Y-axis tick generator — 0.5 intervals for loss/grad, exponential for LR ──
+function buildYTicks(data: MetricPoint[], isLR: boolean): {
+  ticks: number[]; domain: [number, number]; formatter: (v: number) => string
+} {
+  if (isLR) {
+    // Learning rate: let Recharts auto-scale, show exponential notation
+    return {
+      ticks: [],
+      domain: ['auto', 'auto'] as unknown as [number, number],
+      formatter: (v: number) => v.toExponential(1),
+    }
+  }
+
+  const values = data.map(d => d.value).filter(v => isFinite(v))
+  if (values.length === 0) {
+    return { ticks: [0, 0.5, 1, 1.5, 2], domain: [0, 2], formatter: (v) => v.toFixed(1) }
+  }
+
+  const maxVal = Math.max(...values)
+
+  // Round max UP to the nearest 0.5 step so the curve has headroom
+  const step = 0.5
+  const niceMax = Math.ceil(maxVal / step) * step || step
+
+  // Generate ticks: 0, 0.5, 1.0, 1.5 … niceMax
+  const ticks: number[] = []
+  for (let t = 0; t <= niceMax + 0.001; t = Math.round((t + step) * 100) / 100) {
+    ticks.push(t)
+  }
+
+  const formatter = (v: number) =>
+    Number.isInteger(v) ? String(v) : v.toFixed(1)
+
+  return { ticks, domain: [0, niceMax], formatter }
+}
+
 // ── Metric chart card ──
 function ChartCard({
   title, data, color, valueLabel, decimals, emptyText, yAxisLabel, xAxisLabel, yUnit,
@@ -52,6 +88,8 @@ function ChartCard({
 }) {
   const hasData = data.length >= 2
   const lastVal = hasData ? Number(data[data.length - 1]?.value ?? 0) : null
+  const isLR = decimals === 6
+  const { ticks, domain, formatter } = buildYTicks(data, isLR)
 
   return (
     <div className="glass-card p-4 flex flex-col gap-2">
@@ -84,8 +122,6 @@ function ChartCard({
                 tick={{ fontSize: 9, fill: '#475569' }}
                 tickLine={false}
                 axisLine={false}
-                // tick every 100 steps; Recharts picks sensible intervals automatically
-                // when interval="preserveStartEnd" — explicit tickCount keeps it clean
                 tickCount={6}
                 label={{
                   value: xAxisLabel ?? 'Step',
@@ -101,15 +137,9 @@ function ChartCard({
                 tickLine={false}
                 axisLine={false}
                 width={44}
-                // Floor at 0 so the scale reads 0 → 4 (bottom → top), giving
-                // natural round ticks like 1, 2, 3, 4 for typical loss ranges.
-                domain={decimals === 6 ? ['auto', 'auto'] : [0, 'auto']}
-                tickCount={5}
-                tickFormatter={(v: number) => {
-                  if (decimals === 6) return v.toExponential(1)
-                  // Show 1 decimal for values ≥ 1, 2 decimals for smaller values
-                  return v >= 1 ? v.toFixed(1) : v.toFixed(2)
-                }}
+                domain={isLR ? (['auto', 'auto'] as unknown as [number, number]) : domain}
+                ticks={isLR ? undefined : ticks}
+                tickFormatter={formatter}
               />
               <Tooltip
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
