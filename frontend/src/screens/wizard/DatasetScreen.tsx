@@ -113,7 +113,7 @@ function MappingCard({
           <p className={cn('text-xs mt-0.5 leading-relaxed', ok ? 'text-emerald-400/70' : 'text-amber-400/70')}>
             {ok
               ? autoDetected
-                ? 'Heuristics suggested the mapping below. Use the column header dropdowns to adjust.'
+                ? 'Use the column header dropdowns to adjust.'
                 : 'Training will use these columns. Adjust via the column header dropdowns if needed.'
               : 'Use the dropdowns in the column headers below. Assign at least one Input and one Output column.'
             }
@@ -691,7 +691,7 @@ export default function DatasetScreen() {
                 </div>
                 {formatType === 'custom' && (
                   <p className="mt-1.5 text-[11px] text-cap-cyan/70 leading-relaxed">
-                    Assign Input and Output columns below. The model's chat template wraps them directly — no alpaca/sharegpt conversion.
+                    Use the column header dropdowns to assign Input and Output columns.
                   </p>
                 )}
               </div>
@@ -836,7 +836,6 @@ export default function DatasetScreen() {
             />
             <p className="text-[11px] text-slate-600 leading-relaxed">
               This prompt tells the model its role and task. It's prepended to every training example as a system message.
-              For classification tasks, include the label categories here.
             </p>
           </div>
         )}

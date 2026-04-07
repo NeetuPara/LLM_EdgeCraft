@@ -84,6 +84,9 @@ function ChartCard({
                 tick={{ fontSize: 9, fill: '#475569' }}
                 tickLine={false}
                 axisLine={false}
+                // tick every 100 steps; Recharts picks sensible intervals automatically
+                // when interval="preserveStartEnd" — explicit tickCount keeps it clean
+                tickCount={6}
                 label={{
                   value: xAxisLabel ?? 'Step',
                   position: 'insideBottom',
@@ -97,11 +100,15 @@ function ChartCard({
                 tick={{ fontSize: 9, fill: '#475569' }}
                 tickLine={false}
                 axisLine={false}
-                width={50}
-                domain={['auto', 'auto']}
+                width={44}
+                // Floor at 0 so the scale reads 0 → 4 (bottom → top), giving
+                // natural round ticks like 1, 2, 3, 4 for typical loss ranges.
+                domain={decimals === 6 ? ['auto', 'auto'] : [0, 'auto']}
+                tickCount={5}
                 tickFormatter={(v: number) => {
                   if (decimals === 6) return v.toExponential(1)
-                  return v.toFixed(2)
+                  // Show 1 decimal for values ≥ 1, 2 decimals for smaller values
+                  return v >= 1 ? v.toFixed(1) : v.toFixed(2)
                 }}
               />
               <Tooltip
