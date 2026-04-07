@@ -38,6 +38,29 @@ class InferenceBackend:
 
     # ── Load ──
 
+    def _detect_vlm_path(self, model_path: str) -> bool:
+        """
+        Heuristic: is this model path a VLM?
+        Checks model name keywords AND the base_model_name in adapter_config.json
+        (so checkpoints of SmolVLM fine-tunes are also detected).
+        """
+        lower = model_path.lower().replace("\\", "/")
+        vlm_keywords = ["smolvlm", "idefics", "llava", "paligemma", "qwen2-vl",
+                        "qwen2vl", "internvl", "pixtral", "medgemma", "mistral-vl",
+                        "llama-3.2-11b-vision", "llama-vision"]
+        if any(k in lower for k in vlm_keywords):
+            return True
+        # Check adapter_config.json base_model_name for adapter checkpoints
+        adapter_cfg = Path(model_path) / "adapter_config.json"
+        if adapter_cfg.exists():
+            try:
+                import json as _j
+                base = _j.loads(adapter_cfg.read_text()).get("base_model_name_or_path", "").lower()
+                return any(k in base for k in vlm_keywords)
+            except Exception:
+                pass
+        return False
+
     def load_model(
         self,
         model_path: str,
@@ -45,20 +68,53 @@ class InferenceBackend:
         max_seq_length: int = 2048,
         hf_token: Optional[str] = None,
     ) -> None:
-        """Load a HF model or LoRA adapter via FastLanguageModel."""
-        from unsloth import FastLanguageModel
+        """
+        Load a HF model or LoRA adapter.
 
+        Routing:
+          • VLM (SmolVLM, LLaVA, Qwen2-VL…) → FastVisionModel
+            FastVisionModel.for_inference applies VLM-specific kernel patches
+            (image projection, cross-attention optimisations) that
+            FastLanguageModel.for_inference does not cover.
+          • Text / LoRA text → FastLanguageModel (unchanged)
+
+        Attention backend (automatic via Unsloth):
+          • Flash Attention 2 if available (Linux + Ampere+)
+          • Xformers memory-efficient attention otherwise (Windows default)
+          • Pure PyTorch SDPA as final fallback
+          Calling _attn_implementation manually would CONFLICT with Unsloth's
+          own kernel patches, so we let Unsloth choose.
+        """
         hf_token = hf_token if hf_token and hf_token.strip() else None
-
         logger.info("Loading model: %s (load_in_4bit=%s)", model_path, load_in_4bit)
 
-        self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-            model_name=model_path,
-            max_seq_length=max_seq_length,
-            load_in_4bit=load_in_4bit,
-            token=hf_token,
-        )
-        FastLanguageModel.for_inference(self.model)
+        # Peek at adapter_config to decide which Unsloth loader to use
+        _is_vlm_path = self._detect_vlm_path(model_path)
+
+        if _is_vlm_path:
+            try:
+                from unsloth import FastVisionModel
+                self.model, self.tokenizer = FastVisionModel.from_pretrained(
+                    model_name=model_path,
+                    max_seq_length=max_seq_length,
+                    load_in_4bit=load_in_4bit,
+                    token=hf_token,
+                )
+                FastVisionModel.for_inference(self.model)
+                logger.info("Loaded via FastVisionModel (VLM path)")
+            except Exception as e:
+                logger.warning("FastVisionModel failed (%s), falling back to FastLanguageModel", e)
+                _is_vlm_path = False  # fall through to text path below
+
+        if not _is_vlm_path:
+            from unsloth import FastLanguageModel
+            self.model, self.tokenizer = FastLanguageModel.from_pretrained(
+                model_name=model_path,
+                max_seq_length=max_seq_length,
+                load_in_4bit=load_in_4bit,
+                token=hf_token,
+            )
+            FastLanguageModel.for_inference(self.model)
 
         # Detect LoRA adapter (has adapter_config.json)
         self.is_lora = (Path(model_path) / "adapter_config.json").exists()
@@ -128,6 +184,61 @@ class InferenceBackend:
             lines = [f"{m['role']}: {m['content']}" for m in msgs]
             lines.append("assistant: ")
             return "\n".join(lines)
+
+    # ── Kernel warmup ──
+
+    def warmup_generation(self) -> None:
+        """
+        Run one dummy 1-token generation to trigger Triton/CUDA kernel JIT compilation.
+
+        Why this matters:
+          Unsloth uses custom Triton kernels for quantized matmuls, attention, and
+          layer norms. On first use each kernel compiles (~1-5s each, dozens of kernels
+          → 20-60s total delay on the very first query).  After compilation the kernels
+          are cached in unsloth_compiled_cache/ on disk — warm-up is fast on subsequent
+          server restarts (cache hit).
+
+          By running the warmup during model load (before "loaded" is sent to the
+          frontend), the user sees a slightly longer loading bar but zero delay on
+          their first actual query.
+
+        Text models:  1-token generation from "Hi"
+        VLM models:   1-token generation from a 64×64 placeholder image + "Hi"
+        """
+        import torch
+        logger.info("Kernel warmup: generating 1 token to compile Triton kernels...")
+        try:
+            if self.is_vlm:
+                from PIL import Image as PILImage
+                placeholder = PILImage.new("RGB", (64, 64), (80, 80, 80))
+                warmup_msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "Hi"}]}]
+                prompt = self.tokenizer.apply_chat_template(
+                    warmup_msgs, tokenize=False, add_generation_prompt=True
+                )
+                inputs = self.tokenizer(
+                    text=[prompt], images=[[placeholder]], return_tensors="pt"
+                ).to(self.model.device)
+            else:
+                warmup_msgs = [{"role": "user", "content": "Hi"}]
+                prompt = self.format_prompt(warmup_msgs)
+                inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+
+            raw_tok = getattr(self.tokenizer, "tokenizer", self.tokenizer)
+            eos_id  = getattr(raw_tok, "eos_token_id", None) or getattr(self.tokenizer, "eos_token_id", None)
+            pad_id  = getattr(raw_tok, "pad_token_id", None) or eos_id
+
+            with torch.no_grad():
+                self.model.generate(
+                    **inputs,
+                    max_new_tokens=1,
+                    do_sample=False,
+                    eos_token_id=eos_id,
+                    pad_token_id=pad_id,
+                )
+            logger.info("Kernel warmup complete — subsequent queries will not have compilation delay")
+        except Exception as e:
+            # Non-fatal: warmup failure just means the first user query will be slow
+            logger.warning("Kernel warmup failed (non-fatal, first query may be slow): %s", e)
 
     # ── VLM helpers ──
 

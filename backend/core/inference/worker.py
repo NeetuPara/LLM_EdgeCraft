@@ -84,18 +84,36 @@ def run_inference_process(
     apply_gpu_ids(config.get("resolved_gpu_ids"))
 
     # ── Load model ──
-    _send(resp_queue, {"type": "status", "message": f"Loading {config['model_path']}..."})
+    model_path = config["model_path"]
+    model_short = model_path.split("/")[-1].split("\\")[-1]
+    is_adapter = (Path(model_path) / "adapter_config.json").exists()
+
+    _send(resp_queue, {"type": "status", "message": f"Starting {model_short}..."})
 
     try:
         from core.inference.inference_backend import InferenceBackend
 
+        _send(resp_queue, {"type": "status", "message": "Importing Unsloth..."})
         backend = InferenceBackend()
+
+        _send(resp_queue, {"type": "status",
+            "message": f"{'Loading adapter + base model' if is_adapter else 'Loading model weights'} ({model_short})..."})
         backend.load_model(
             model_path=config["model_path"],
             load_in_4bit=config.get("load_in_4bit", True),
             max_seq_length=config.get("max_seq_length", 2048),
             hf_token=config.get("hf_token") or None,
         )
+
+        # ── Kernel warmup ──────────────────────────────────────────────────
+        # Triton / CUDA kernels JIT-compile on their FIRST use.
+        # Without warmup: user's first query → 20-60s delay while kernels compile.
+        # With warmup:    kernels compile NOW (hidden inside loading), first query instant.
+        # Compiled kernels are cached in unsloth_compiled_cache/ — warmup is fast on
+        # subsequent server restarts (cache hit), slow only on the very first ever run.
+        # ──────────────────────────────────────────────────────────────────
+        _send(resp_queue, {"type": "status", "message": "Warming up kernels..."})
+        backend.warmup_generation()
 
         _send(resp_queue, {
             "type": "loaded",

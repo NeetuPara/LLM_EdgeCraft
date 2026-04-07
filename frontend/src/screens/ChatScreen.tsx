@@ -22,6 +22,29 @@ import { apiFetch } from '@/api/client'
 import { streamDemoResponse } from '@/hooks/use-demo-stream'
 import { cn } from '@/utils/cn'
 
+/**
+ * Resize + compress an image data URL to ≤maxDim on the longest side.
+ * SmolVLM tiles images at 384×384 px — anything beyond 1024px is pure overhead.
+ * Reduces a 4K solar-panel photo (~3 MB base64) down to ~80 KB.
+ */
+function resizeImageDataUrl(dataUrl: string, maxDim = 512, quality = 0.85): Promise<string> {
+  return new Promise(resolve => {
+    const img = new Image()
+    img.onload = () => {
+      let w = img.naturalWidth, h = img.naturalHeight
+      if (w <= maxDim && h <= maxDim) { resolve(dataUrl); return }
+      if (w > h) { h = Math.round(h * maxDim / w); w = maxDim }
+      else       { w = Math.round(w * maxDim / h); h = maxDim }
+      const canvas = document.createElement('canvas')
+      canvas.width = w; canvas.height = h
+      canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
+      resolve(canvas.toDataURL('image/jpeg', quality))
+    }
+    img.onerror = () => resolve(dataUrl)  // fallback: use original if resize fails
+    img.src = dataUrl
+  })
+}
+
 /** Extract just the model/folder name from any path (handles / and \ separators) */
 function modelDisplayName(path: string | null | undefined): string {
   if (!path) return ''
@@ -111,7 +134,11 @@ function MessageBubble({ msg, modelName }: { msg: Message; modelName?: string | 
         /* User: compact right-aligned pill */
         <div className="max-w-[72%] px-4 py-2.5 rounded-2xl rounded-tr-sm bg-cap-blue/25 border border-cap-blue/20 text-slate-200 text-sm space-y-2">
           {msg.imageDataUrl && (
-            <img src={msg.imageDataUrl} alt="attached" className="max-h-40 rounded-xl border border-white/10 object-cover" />
+            <img
+              src={msg.imageDataUrl}
+              alt="attached"
+              className="max-h-48 w-auto rounded-xl border border-white/10 object-contain block"
+            />
           )}
           {msg.content && <span>{msg.content}</span>}
         </div>
@@ -820,7 +847,11 @@ function ChatPanel({
                     const f = e.target.files?.[0]
                     if (f) {
                       const reader = new FileReader()
-                      reader.onload = ev => setImagePreview(ev.target?.result as string)
+                      reader.onload = async ev => {
+                        const raw = ev.target?.result as string
+                        const resized = await resizeImageDataUrl(raw)
+                        setImagePreview(resized)
+                      }
                       reader.readAsDataURL(f)
                     }
                     e.target.value = ''
@@ -907,7 +938,14 @@ function CompareInput({ isStreaming, isVision, leftLabel, rightLabel, onSend, in
             <input ref={imageRef} type="file" accept="image/*" className="hidden"
               onChange={e => {
                 const f = e.target.files?.[0]
-                if (f) { const r = new FileReader(); r.onload = ev => setImagePreview(ev.target?.result as string); r.readAsDataURL(f) }
+                if (f) {
+                  const r = new FileReader()
+                  r.onload = async ev => {
+                    const raw = ev.target?.result as string
+                    setImagePreview(await resizeImageDataUrl(raw))
+                  }
+                  r.readAsDataURL(f)
+                }
                 e.target.value = ''
               }}
             />
@@ -961,6 +999,7 @@ export default function ChatScreen() {
   const [isLoadingModel, setIsLoadingModel] = useState(false)
   const [loadingStatus, setLoadingStatus] = useState('')
   const [isLoadingCompareModel, setIsLoadingCompareModel] = useState(false)
+  const [compareLoadingStage, setCompareLoadingStage] = useState('')
   const [compareModelReady, setCompareModelReady] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -1007,17 +1046,26 @@ export default function ChatScreen() {
   }
 
   const handleSelectModel = useCallback(async (model: string) => {
-    // Check real backend status before skipping — don't rely on persisted store state
-    // (backend may have been restarted while frontend kept loadedModel in store)
-    if (model === loadedModel && !isLoadingModel) {
+    // Read current state directly from Zustand store to avoid stale closure.
+    // useCallback(fn, []) captures loadedModel at mount time (null), so comparing
+    // model === loadedModel inside the closure never matches after the model loads.
+    const { loadedModel: currentLoaded } = useChatStore.getState()
+
+    if (!isMockMode() && !useChatStore.getState().isLoadingModel) {
       try {
-        const status = await apiFetch<{ is_loaded: boolean }>('/api/inference/status')
-        if (status.is_loaded) {
-          toast.info('Model already loaded and ready.')
+        const status = await apiFetch<{ is_loaded: boolean; model_name?: string }>('/api/inference/status')
+        if (status.is_loaded && status.model_name === model) {
+          // Backend already has this exact model loaded — no reload needed
+          setLoadedModel(model)   // ensure frontend store matches backend
+          toast.info(`${model.split(/[\\/]/).pop()} already loaded and ready.`)
           return
         }
-        // Backend lost the model (restart) — fall through to reload
-      } catch { /* fall through */ }
+      } catch { /* fall through to load */ }
+    }
+    // Skip check entirely in mock mode but still detect "same model" via store
+    if (isMockMode() && model === currentLoaded) {
+      toast.info('Model already loaded (demo mode).')
+      return
     }
     setLoadedModel(model)
     if (isMockMode()) {
@@ -1027,16 +1075,16 @@ export default function ChatScreen() {
       return
     }
     setIsLoadingModel(true)
-    // Show appropriate loading message based on model type
-    const isAdapter = model.includes('outputs') || model.includes('adapter')
-    const isMerged = model.includes('exports')
-    const isLocal = model.startsWith('C:') || model.startsWith('D:') || model.startsWith('/')
-    setLoadingStatus(
-      isAdapter ? 'Loading base model + applying LoRA adapter...'
-      : isMerged ? 'Loading merged model into VRAM...'
-      : isLocal ? 'Loading local model into VRAM...'
-      : `Downloading & loading ${modelDisplayName(model)}...`
-    )
+    setLoadingStatus('Preparing...')
+
+    // Poll the backend for real loading stage messages every 1.5s
+    const stagePoller = setInterval(async () => {
+      try {
+        const s = await apiFetch<{ loading_stage?: string; status?: string }>('/api/inference/status')
+        if (s.loading_stage) setLoadingStatus(s.loading_stage)
+      } catch { /* ignore — backend may be busy */ }
+    }, 1500)
+
     try {
       const res = await apiFetch<{
         status: string
@@ -1066,26 +1114,29 @@ export default function ChatScreen() {
           { duration: 4000 }
         )
       }
+      setLoadingStatus('Ready ✓')
     } catch (err) {
       console.error('Model load error:', err)
+      setLoadingStatus('Load failed')
     } finally {
-      setIsLoadingModel(false)
-      setLoadingStatus('')
+      clearInterval(stagePoller)
+      setTimeout(() => { setIsLoadingModel(false); setLoadingStatus('') }, 600)
     }
   }, [])
 
   // Load right-panel compare model into separate VRAM slot
   const handleSelectCompareModel = useCallback(async (model: string) => {
-    // Verify backend status before skipping — backend may have restarted
-    if (model === compareModel && compareModelReady) {
+    // Same stale-closure fix as handleSelectModel — read directly from backend
+    if (!isMockMode()) {
       try {
-        const status = await apiFetch<{ is_loaded: boolean }>('/api/inference/status-compare')
-        if (status.is_loaded) {
-          toast.info('Right model already loaded and ready.')
+        const status = await apiFetch<{ is_loaded: boolean; model_name?: string }>('/api/inference/status-compare')
+        if (status.is_loaded && status.model_name === model) {
+          setCompareModel(model)
+          setCompareModelReady(true)
+          toast.info(`${model.split(/[\\/]/).pop()} already loaded (right slot).`)
           return
         }
       } catch { /* fall through */ }
-      setCompareModelReady(false)
     }
     setCompareModel(model)
     setCompareModelReady(false)
@@ -1096,6 +1147,21 @@ export default function ChatScreen() {
       return
     }
     setIsLoadingCompareModel(true)
+    setCompareLoadingStage('Preparing...')
+
+    // Poll for loading stage — shown inline next to the spinner, NOT as toasts
+    // Track last stage to avoid redundant state updates
+    let lastStage = ''
+    const stagePoller = setInterval(async () => {
+      try {
+        const s = await apiFetch<{ loading_stage?: string }>('/api/inference/status-compare')
+        if (s.loading_stage && s.loading_stage !== lastStage) {
+          lastStage = s.loading_stage
+          setCompareLoadingStage(s.loading_stage)
+        }
+      } catch { /* ignore */ }
+    }, 1500)
+
     try {
       const res = await apiFetch<{ status: string; error?: string }>(
         '/api/inference/load-compare',
@@ -1110,7 +1176,9 @@ export default function ChatScreen() {
     } catch (err: unknown) {
       toast.error((err as { message?: string })?.message ?? 'Failed to load compare model')
     } finally {
+      clearInterval(stagePoller)
       setIsLoadingCompareModel(false)
+      setCompareLoadingStage('')
     }
   }, [setCompareModel])
 
@@ -1349,8 +1417,8 @@ export default function ChatScreen() {
     const ts = Date.now()
     const displayText = text || (imageDataUrl ? '📎 Image' : '')
     // Step 1: show user message in BOTH panels immediately — before any generation
-    const leftUser:  Message = { id: `u-l-${ts}`, role: 'user', content: displayText, createdAt: ts }
-    const rightUser: Message = { id: `u-r-${ts}`, role: 'user', content: displayText, createdAt: ts }
+    const leftUser:  Message = { id: `u-l-${ts}`, role: 'user', content: displayText, imageDataUrl, createdAt: ts }
+    const rightUser: Message = { id: `u-r-${ts}`, role: 'user', content: displayText, imageDataUrl, createdAt: ts }
     setLeftCompareMessages(prev  => [...prev,  leftUser])
     setRightCompareMessages(prev => [...prev, rightUser])
 
@@ -1441,9 +1509,9 @@ export default function ChatScreen() {
                     label="Right model"
                   />
                   {isLoadingCompareModel && (
-                    <div className="flex items-center gap-1 text-[11px] text-slate-400">
-                      <Loader size={11} className="animate-spin text-cap-cyan" />
-                      Loading...
+                    <div className="flex items-center gap-1 text-[11px] text-slate-400 max-w-[200px]">
+                      <Loader size={11} className="animate-spin text-cap-cyan shrink-0" />
+                      <span className="truncate">{compareLoadingStage || 'Loading...'}</span>
                     </div>
                   )}
                   {compareModel && !isLoadingCompareModel && compareModelReady && (
@@ -1512,7 +1580,7 @@ export default function ChatScreen() {
                 isVision={chatModelType === 'vision'}
                 leftLabel={modelDisplayName(loadedModel) || '?'}
                 rightLabel={modelDisplayName(compareModel) || '?'}
-                onSend={(text) => { handleCompareSend(text); setCompareInput('') }}
+                onSend={(text, img) => { handleCompareSend(text, img); setCompareInput('') }}
                 input={compareInput}
                 setInput={setCompareInput}
               />

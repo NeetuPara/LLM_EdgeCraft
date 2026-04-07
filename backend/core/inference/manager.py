@@ -116,6 +116,7 @@ class InferenceManager:
         self._context_length: Optional[int] = None
         self._loading: bool = False
         self._loading_model: Optional[str] = None
+        self._loading_stage: str = ""   # current loading stage shown in UI
 
     # ── Properties ──
 
@@ -137,12 +138,15 @@ class InferenceManager:
 
     def get_status(self) -> dict:
         return {
+            # is_loaded is the primary field the frontend checks
+            "is_loaded": self.is_loaded,
             "status": "loaded" if self.is_loaded else ("loading" if self._loading else "idle"),
             "model_name": self._active_model,
             "is_gguf": self._is_gguf,
             "is_lora": self._is_lora,
             "context_length": self._context_length,
             "loading_model": self._loading_model if self._loading else None,
+            "loading_stage": self._loading_stage if self._loading else None,
         }
 
     # ── GGUF detection ──
@@ -297,7 +301,9 @@ class InferenceManager:
 
             rtype = resp.get("type", "")
             if rtype == "status":
-                logger.info("Inference subprocess: %s", resp.get("message", ""))
+                msg = resp.get("message", "")
+                logger.info("Inference subprocess: %s", msg)
+                self._loading_stage = msg   # expose to /api/inference/status poll
                 continue
             if rtype == "loaded":
                 if resp.get("success"):

@@ -176,9 +176,10 @@ def compare_model_status(_user=Depends(get_current_user)):
     from core.inference import get_compare_manager
     m = get_compare_manager()
     return {
-        "is_loaded": m.is_model_loaded(),
-        "is_loading": m.is_loading,
-        "model_name": m.loaded_model_name or m.loading_model or None,
+        "is_loaded":    m.is_loaded,          # property, not method
+        "is_loading":   m.is_loading,
+        "model_name":   m.active_model or m.loading_model or None,
+        "loading_stage": m._loading_stage if m.is_loading else None,
     }
 
 
