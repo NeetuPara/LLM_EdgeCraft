@@ -16,6 +16,7 @@ const DatasetScreen        = lazy(() => import('@/screens/wizard/DatasetScreen')
 const HyperparamsScreen    = lazy(() => import('@/screens/wizard/HyperparamsScreen'))
 const TrainingSummaryScreen= lazy(() => import('@/screens/wizard/TrainingSummaryScreen'))
 const TrainingScreen       = lazy(() => import('@/screens/TrainingScreen'))
+const RunDetailScreen      = lazy(() => import('@/screens/RunDetailScreen'))
 const ChatScreen           = lazy(() => import('@/screens/ChatScreen'))
 const ExportScreen         = lazy(() => import('@/screens/ExportScreen'))
 const DataRecipesScreen    = lazy(() => import('@/screens/DataRecipesScreen'))
@@ -133,6 +134,9 @@ function AnimatedRoutes() {
 
         {/* Live Training */}
         <Route path="/training" element={protect(<TrainingScreen />)} />
+
+        {/* Completed run detail */}
+        <Route path="/run/:id" element={protect(<RunDetailScreen />)} />
 
         {/* Chat */}
         <Route path="/chat" element={protect(<ChatScreen />)} />

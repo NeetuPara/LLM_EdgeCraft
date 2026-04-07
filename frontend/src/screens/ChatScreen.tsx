@@ -109,8 +109,11 @@ function MessageBubble({ msg, modelName }: { msg: Message; modelName?: string | 
     >
       {isUser ? (
         /* User: compact right-aligned pill */
-        <div className="max-w-[72%] px-4 py-2.5 rounded-2xl rounded-tr-sm bg-cap-blue/25 border border-cap-blue/20 text-slate-200 text-sm">
-          {msg.content}
+        <div className="max-w-[72%] px-4 py-2.5 rounded-2xl rounded-tr-sm bg-cap-blue/25 border border-cap-blue/20 text-slate-200 text-sm space-y-2">
+          {msg.imageDataUrl && (
+            <img src={msg.imageDataUrl} alt="attached" className="max-h-40 rounded-xl border border-white/10 object-cover" />
+          )}
+          {msg.content && <span>{msg.content}</span>}
         </div>
       ) : (
         /* AI: full-width document style with left accent */
@@ -158,6 +161,138 @@ function _friendlyLoraName(name: string): string {
 }
 
 interface ExportedModel { id: string; name: string; path: string; type: 'lora' | 'merged' }
+
+// ── Load Custom Model modal ──────────────────────────────────────────────────
+// Lets the user load any local model by path:
+//   • GGUF file  (path/to/model.gguf)
+//   • Adapter folder (path/to/adapter/) — base model auto-detected from adapter_config.json
+//   • Merged HF folder (path/to/merged/)
+// ────────────────────────────────────────────────────────────────────────────
+
+function detectModelType(path: string): { type: 'gguf' | 'adapter' | 'merged' | ''; hint: string } {
+  const p = path.toLowerCase().replace(/\\/g, '/')
+  if (p.endsWith('.gguf') || p.includes('.gguf'))
+    return { type: 'gguf', hint: 'GGUF quantized model — loads directly via llama.cpp.' }
+  if (p.includes('adapter') || p.includes('lora') || p.includes('qlora') || p.includes('peft'))
+    return { type: 'adapter', hint: 'LoRA/QLoRA adapter — base model is auto-detected from adapter_config.json.' }
+  if (p.includes('merged') || p.includes('full'))
+    return { type: 'merged', hint: 'Merged HF model folder (base + adapter merged). Loads as a standard HF model.' }
+  if (path.length > 4)
+    return { type: 'adapter', hint: 'Will detect type automatically. If it contains adapter_config.json, the base model is auto-loaded.' }
+  return { type: '', hint: '' }
+}
+
+function LoadCustomModelModal({
+  open, onClose, onLoad,
+}: { open: boolean; onClose: () => void; onLoad: (path: string) => void }) {
+  const [path, setPath] = useState('')
+  const [slot, setSlot] = useState<'left' | 'right'>('left')
+  const detected = detectModelType(path)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (open) { setPath(''); setTimeout(() => inputRef.current?.focus(), 100) }
+  }, [open])
+
+  const handleLoad = () => {
+    const p = path.trim()
+    if (!p) return
+    onLoad(p)
+    onClose()
+  }
+
+  if (!open) return null
+
+  const typeColors: Record<string, string> = {
+    gguf:    'text-amber-400 bg-amber-500/10 border-amber-500/20',
+    adapter: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
+    merged:  'text-indigo-400 bg-indigo-500/10 border-indigo-500/20',
+  }
+  const typeLabels: Record<string, string> = {
+    gguf: 'GGUF', adapter: 'Adapter', merged: 'Merged HF',
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96 }}
+        transition={{ duration: 0.18 }}
+        className="bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl w-full max-w-lg p-6"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-5">
+          <div className="p-2.5 rounded-xl bg-cap-cyan/10 border border-cap-cyan/20">
+            <Upload size={18} className="text-cap-cyan" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-slate-100">Load Custom Model</h2>
+            <p className="text-xs text-slate-500 mt-0.5">Load any local model — adapter, GGUF, or merged HF folder</p>
+          </div>
+          <button onClick={onClose} className="ml-auto p-1.5 text-slate-500 hover:text-slate-300 transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Path input */}
+        <div className="mb-4">
+          <label className="block text-xs text-slate-500 mb-1.5 font-medium">Model Path</label>
+          <input
+            ref={inputRef}
+            value={path}
+            onChange={e => setPath(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleLoad()}
+            placeholder="D:\models\my_adapter  or  D:\models\model.gguf"
+            className="w-full px-3 py-3 rounded-xl bg-slate-800/60 border border-slate-700 text-sm text-slate-200 font-mono focus:outline-none focus:border-cap-cyan/50 focus:ring-1 focus:ring-cap-cyan/20 placeholder:text-slate-600 placeholder:font-sans"
+          />
+        </div>
+
+        {/* Auto-detected type badge + hint */}
+        {detected.type && (
+          <div className="mb-4 flex items-start gap-2.5 px-3.5 py-2.5 rounded-xl bg-slate-800/40 border border-white/[0.06]">
+            <span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full border shrink-0 mt-0.5', typeColors[detected.type])}>
+              {typeLabels[detected.type]}
+            </span>
+            <p className="text-xs text-slate-400 leading-relaxed">{detected.hint}</p>
+          </div>
+        )}
+
+        {/* Reference cards */}
+        <div className="grid grid-cols-3 gap-2 mb-5">
+          {[
+            { type: 'gguf',    label: 'GGUF',         example: 'model.gguf',            desc: 'Fast llama.cpp inference' },
+            { type: 'adapter', label: 'Adapter',       example: 'lora_output/checkpoint', desc: 'Auto-loads base model' },
+            { type: 'merged',  label: 'Merged',        example: 'merged_model/',          desc: 'Full HF model folder' },
+          ].map(({ type, label, example, desc }) => (
+            <div key={type} className={cn('rounded-xl p-3 border', typeColors[type])}>
+              <p className={cn('text-[10px] font-semibold mb-0.5', type === 'gguf' ? 'text-amber-400' : type === 'adapter' ? 'text-emerald-400' : 'text-indigo-400')}>{label}</p>
+              <p className="text-[10px] font-mono text-slate-500 truncate">{example}</p>
+              <p className="text-[9px] text-slate-600 mt-0.5">{desc}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Actions */}
+        <div className="flex gap-3">
+          <button onClick={onClose} className="btn-secondary flex-1 py-2.5 text-sm">Cancel</button>
+          <button
+            onClick={handleLoad}
+            disabled={!path.trim()}
+            className="btn-primary flex-1 py-2.5 text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            <Upload size={14} />
+            Load Model
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  )
+}
 
 function isVisionModel(name: string): boolean {
   const lower = name.toLowerCase()
@@ -601,7 +736,7 @@ function ChatPanel({
   messages: Message[]
   isStreaming: boolean
   modelName: string | null
-  onSend: (text: string) => void
+  onSend: (text: string, imageDataUrl?: string) => void
   disabled?: boolean
   sharedInput?: string
   setSharedInput?: (v: string) => void
@@ -623,9 +758,10 @@ function ChatPanel({
   const handleSend = () => {
     const text = input.trim()
     if ((!text && !imagePreview) || isStreaming || disabled) return
+    const img = imagePreview   // capture before clearing
     setInput('')
     setImagePreview(null)
-    onSend(text)
+    onSend(text, img ?? undefined)
   }
 
   return (
@@ -737,7 +873,7 @@ function CompareInput({ isStreaming, isVision, leftLabel, rightLabel, onSend, in
   isVision: boolean
   leftLabel: string
   rightLabel: string
-  onSend: (text: string) => void
+  onSend: (text: string, imageDataUrl?: string) => void
   input: string
   setInput: (v: string) => void
 }) {
@@ -746,7 +882,8 @@ function CompareInput({ isStreaming, isVision, leftLabel, rightLabel, onSend, in
 
   const doSend = () => {
     if ((!input.trim() && !imagePreview) || isStreaming) return
-    onSend(input.trim())
+    const img = imagePreview
+    onSend(input.trim(), img ?? undefined)
     setImagePreview(null)
   }
 
@@ -813,6 +950,7 @@ export default function ChatScreen() {
   } = useChatStore()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [loadCustomOpen, setLoadCustomOpen] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
   // Compare mode uses fully independent local state — never shares thread/activeThread
   // so activeThreadId changes don't wipe compare responses mid-generation
@@ -991,11 +1129,19 @@ export default function ChatScreen() {
     modelName: string | null,
     useAdapter?: boolean | null,
     compareSlot?: boolean,
+    imageDataUrl?: string,   // base64 data URL — only sent for the current turn
   ) => {
     const threadId = await ensureThread()
 
-    // Add user message
-    const userMsg = await addMessage({ threadId, role: 'user', content: text, modelName: modelName ?? undefined })
+    // Add user message — store text + imageDataUrl so it shows in thread history
+    const displayText = text || (imageDataUrl ? '📎 Image' : '')
+    const userMsg = await addMessage({
+      threadId,
+      role: 'user',
+      content: displayText,
+      modelName: modelName ?? undefined,
+      imageDataUrl: imageDataUrl ?? undefined,
+    })
     setTargetMessages(prev => [...prev, userMsg])
 
     if (targetMessages.length === 0) {
@@ -1038,10 +1184,18 @@ export default function ChatScreen() {
 
     // Real mode — SSE stream from backend
     try {
-      const history = targetMessages
+      const history: { role: 'user' | 'assistant'; content: unknown }[] = targetMessages
         .filter(m => m.role === 'user' || m.role === 'assistant')
         .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
-      history.push({ role: 'user', content: text })
+
+      // Current turn: if image attached, use multimodal content (OpenAI vision format)
+      const currentContent: unknown = imageDataUrl
+        ? [
+            { type: 'image_url', image_url: { url: imageDataUrl } },
+            { type: 'text', text: text || '' },
+          ]
+        : text
+      history.push({ role: 'user', content: currentContent })
 
       const body: Record<string, unknown> = {
         messages: history,
@@ -1121,8 +1275,8 @@ export default function ChatScreen() {
     }
   }, [ensureThread, setIsStreaming, params])
 
-  const handleSend = useCallback(async (text: string) => {
-    await sendMessage(text, messages, setMessages, loadedModel)
+  const handleSend = useCallback(async (text: string, imageDataUrl?: string) => {
+    await sendMessage(text, messages, setMessages, loadedModel, undefined, false, imageDataUrl)
   }, [sendMessage, messages, loadedModel])
 
   // Dedicated streaming helper for compare mode — bypasses thread system entirely
@@ -1133,12 +1287,16 @@ export default function ChatScreen() {
     modelName: string | null,
     compareSlot: boolean,
     asstId: string,
+    imageDataUrl?: string,
   ) => {
     // Add streaming assistant placeholder (user msg already added)
     const asstMsg: Message = { id: asstId, role: 'assistant', content: '', createdAt: Date.now() }
     setMsgs(prev => [...prev, asstMsg])
 
-    const history = [{ role: 'user' as const, content: text }]
+    const currentContent: unknown = imageDataUrl
+      ? [{ type: 'image_url', image_url: { url: imageDataUrl } }, { type: 'text', text: text || '' }]
+      : text
+    const history = [{ role: 'user' as const, content: currentContent }]
     const body: Record<string, unknown> = {
       messages: history, stream: true,
       temperature: params.temperature, top_p: params.topP, top_k: params.topK,
@@ -1187,17 +1345,18 @@ export default function ChatScreen() {
     }
   }, [params])
 
-  const handleCompareSend = useCallback(async (text: string) => {
+  const handleCompareSend = useCallback(async (text: string, imageDataUrl?: string) => {
     const ts = Date.now()
+    const displayText = text || (imageDataUrl ? '📎 Image' : '')
     // Step 1: show user message in BOTH panels immediately — before any generation
-    const leftUser:  Message = { id: `u-l-${ts}`, role: 'user', content: text, createdAt: ts }
-    const rightUser: Message = { id: `u-r-${ts}`, role: 'user', content: text, createdAt: ts }
+    const leftUser:  Message = { id: `u-l-${ts}`, role: 'user', content: displayText, createdAt: ts }
+    const rightUser: Message = { id: `u-r-${ts}`, role: 'user', content: displayText, createdAt: ts }
     setLeftCompareMessages(prev  => [...prev,  leftUser])
     setRightCompareMessages(prev => [...prev, rightUser])
 
     // Step 2: generate responses one by one (both models stay in VRAM)
-    await streamCompare(text, setLeftCompareMessages,  loadedModel,  false, `a-l-${ts}`)
-    await streamCompare(text, setRightCompareMessages, compareModel, true,  `a-r-${ts}`)
+    await streamCompare(text, setLeftCompareMessages,  loadedModel,  false, `a-l-${ts}`, imageDataUrl)
+    await streamCompare(text, setRightCompareMessages, compareModel, true,  `a-r-${ts}`, imageDataUrl)
   }, [sendMessage, messages, compareMessages, loadedModel, compareModel])
 
   return (
@@ -1300,9 +1459,17 @@ export default function ChatScreen() {
               </div>
             )}
 
+            {/* Load custom model */}
+            <button onClick={() => setLoadCustomOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800/40 border border-white/[0.06] text-slate-400 hover:text-cap-cyan hover:border-cap-cyan/30 transition-colors text-xs shrink-0"
+              title="Load custom model from local path (adapter, GGUF, or merged folder)"
+            >
+              <Upload size={13} /> Load
+            </button>
+
             {/* Settings */}
             <button onClick={() => setSettingsOpen(true)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800/40 border border-white/[0.06] text-slate-400 hover:text-slate-200 hover:border-white/15 transition-colors text-xs shrink-0 ml-auto">
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800/40 border border-white/[0.06] text-slate-400 hover:text-slate-200 hover:border-white/15 transition-colors text-xs shrink-0">
               <Settings size={13} /> Settings
             </button>
           </div>
@@ -1355,6 +1522,16 @@ export default function ChatScreen() {
       </div>
 
       <SettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      <AnimatePresence>
+        {loadCustomOpen && (
+          <LoadCustomModelModal
+            open={loadCustomOpen}
+            onClose={() => setLoadCustomOpen(false)}
+            onLoad={handleSelectModel}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }

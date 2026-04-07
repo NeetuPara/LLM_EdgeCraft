@@ -293,7 +293,14 @@ export default function DashboardScreen() {
                 {runs.map((run) => (
                   <div
                     key={run.id}
-                    className="flex items-center gap-4 px-6 py-4 hover:bg-white/[0.02] transition-colors group"
+                    onClick={() => {
+                      if (run.status === 'running') navigate('/training')
+                      else if (run.status === 'completed') navigate(`/run/${run.id}`)
+                    }}
+                    className={cn(
+                      'flex items-center gap-4 px-6 py-4 hover:bg-white/[0.02] transition-colors group',
+                      (run.status === 'completed' || run.status === 'running') && 'cursor-pointer',
+                    )}
                   >
                     {/* Status dot */}
                     <div
@@ -366,7 +373,7 @@ export default function DashboardScreen() {
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       {run.status === 'running' && (
                         <button
-                          onClick={() => navigate('/training')}
+                          onClick={e => { e.stopPropagation(); navigate('/training') }}
                           className="p-2 text-slate-500 hover:text-cap-cyan hover:bg-cap-cyan/10 rounded-lg transition-all text-xs"
                           title="View live training"
                         >
@@ -375,7 +382,7 @@ export default function DashboardScreen() {
                       )}
                       {run.status === 'completed' && (
                         <button
-                          onClick={() => navigate('/chat')}
+                          onClick={e => { e.stopPropagation(); navigate(`/run/${run.id}`) }}
                           className="p-2 text-slate-500 hover:text-cap-cyan hover:bg-cap-cyan/10 rounded-lg transition-all"
                           title="Test in chat"
                         >
@@ -383,7 +390,7 @@ export default function DashboardScreen() {
                         </button>
                       )}
                       <button
-                        onClick={() => setDeleteConfirm(run)}
+                        onClick={e => { e.stopPropagation(); setDeleteConfirm(run) }}
                         className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all"
                         title="Delete run"
                       >

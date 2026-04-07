@@ -95,6 +95,37 @@ export interface TrainingStatus {
   }
 }
 
+export interface RunMetrics {
+  loss_history: number[]
+  loss_step_history: number[]
+  lr_history: number[]
+  lr_step_history: number[]
+  grad_norm_history: number[]
+  grad_norm_step_history: number[]
+  eval_loss_history: number[]
+  eval_step_history: number[]
+  final_epoch: number | null
+  final_num_tokens: number | null
+}
+
+export interface RunDetail {
+  id: string
+  status: string
+  model_name: string
+  dataset_name: string
+  config_json: string
+  started_at: string
+  ended_at?: string
+  total_steps?: number
+  final_step?: number
+  final_loss?: number
+  output_dir?: string
+  error_message?: string
+  duration_seconds?: number
+  loss_sparkline?: number[]
+  metrics: RunMetrics
+}
+
 export const trainingApi = {
   start: (config: TrainingStartRequest) =>
     isMockMode()
@@ -148,6 +179,9 @@ export const trainingApi = {
     isMockMode()
       ? mockTraining.getRun(id)
       : apiFetch<TrainingRun>(`/api/train/runs/${id}`),
+
+  getRunDetail: (id: string) =>
+    apiFetch<RunDetail>(`/api/train/runs/${id}`),
 
   deleteRun: (id: string) =>
     isMockMode()

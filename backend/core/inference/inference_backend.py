@@ -129,6 +129,126 @@ class InferenceBackend:
             lines.append("assistant: ")
             return "\n".join(lines)
 
+    # ── VLM helpers ──
+
+    @property
+    def is_vlm(self) -> bool:
+        """True when the loaded processor has an image_processor (SmolVLM, LLaVA, Qwen2-VL…)."""
+        return self.tokenizer is not None and hasattr(self.tokenizer, "image_processor")
+
+    def _extract_image_from_messages(self, messages: list[dict]):
+        """
+        Scan messages for OpenAI-style image_url content and return the first PIL image found.
+        Returns None if no image is present.
+        """
+        import base64, io
+        from PIL import Image as PILImage
+
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "image_url":
+                    url = (part.get("image_url") or {}).get("url", "")
+                    if url.startswith("data:image"):
+                        try:
+                            header, b64 = url.split(",", 1)
+                            mime = header.split(";")[0].split(":")[1]   # e.g. image/jpeg
+                            img = PILImage.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+                            logger.info("Image extracted from message: format=%s size=%s", mime, img.size)
+                            return img
+                        except Exception as e:
+                            logger.error(
+                                "Failed to decode base64 image (url prefix=%r): %s",
+                                url[:40], e, exc_info=True,
+                            )
+                    else:
+                        logger.warning("image_url content found but URL format unrecognised (prefix=%r)", url[:40])
+        return None
+
+    def _build_vlm_inputs(self, messages: list[dict], system_prompt: str = ""):
+        """
+        Build processor inputs for VLM (SmolVLM / Idefics3) inference.
+
+        Strategy:
+          • Extract image from messages (OpenAI image_url format).
+          • If no image: fall back to a neutral grey placeholder so the processor
+            doesn't crash — SmolVLM's Idefics3Processor always requires images.
+          • Normalise message content to VLM format:
+              first user turn with an image → [{"type":"image"}, {"type":"text","text":"..."}]
+              all other turns              → [{"type":"text","text":"..."}]
+          • Apply chat template then call processor(text=..., images=...).
+        """
+        from PIL import Image as PILImage
+
+        # Extract image
+        image = self._extract_image_from_messages(messages)
+        has_real_image = image is not None
+        if image is None:
+            logger.warning("No image found in messages — using grey placeholder (model output will be uninformative)")
+            image = PILImage.new("RGB", (64, 64), color=(80, 80, 80))
+        else:
+            logger.info("Using real image for VLM inference: size=%s", image.size)
+
+        # Normalise messages to VLM format
+        vlm_messages = []
+        image_inserted = False
+
+        for msg in messages:
+            role = msg.get("role", "user")
+            if role == "system":
+                continue   # inject system prompt into first user message below
+            content = msg.get("content", "")
+
+            # Extract plain text from multimodal content
+            if isinstance(content, list):
+                text = " ".join(
+                    p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ).strip()
+            else:
+                text = str(content).strip()
+
+            # Apply system prompt into first user message
+            if role == "user" and system_prompt and system_prompt.strip() and not vlm_messages:
+                text = f"{system_prompt}\n\n{text}" if text else system_prompt
+
+            # ALWAYS insert {"type":"image"} in the first user turn.
+            # SmolVLM (Idefics3) requires exactly 1 image token in the text to match
+            # the 1 image in the images=[[...]] list — even when using a placeholder.
+            if role == "user" and not image_inserted:
+                vlm_messages.append({
+                    "role": "user",
+                    "content": [{"type": "image"}, {"type": "text", "text": text}],
+                })
+                image_inserted = True
+            else:
+                vlm_messages.append({
+                    "role": role,
+                    "content": [{"type": "text", "text": text}],
+                })
+
+        if not vlm_messages:
+            vlm_messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "Describe this image."}]}]
+
+        # Apply chat template via the processor
+        prompt = self.tokenizer.apply_chat_template(
+            vlm_messages, tokenize=False, add_generation_prompt=True,
+        )
+        logger.info("VLM prompt (first 400 chars): %r", prompt[:400])
+
+        # Processor call — images must be a list of lists (batch × images_per_sample)
+        inputs = self.tokenizer(
+            text=[prompt],
+            images=[[image]],
+            return_tensors="pt",
+        ).to(self.model.device)
+
+        return inputs
+
     # ── Generation ──
 
     def generate_stream(
@@ -155,11 +275,16 @@ class InferenceBackend:
         """
         from transformers import TextIteratorStreamer
 
-        prompt = self.format_prompt(messages, system_prompt)
-        logger.info("Prompt (first 400 chars): %r", prompt[:400])
+        # ── VLM path (SmolVLM / LLaVA / Qwen2-VL etc.) ──
+        if self.is_vlm:
+            inputs = self._build_vlm_inputs(messages, system_prompt)
+        else:
+            # ── Text-only path ──
+            prompt = self.format_prompt(messages, system_prompt)
+            logger.info("Prompt (first 400 chars): %r", prompt[:400])
+            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
-
+        # TextIteratorStreamer needs the plain tokenizer (not the whole processor)
         raw_tok = getattr(self.tokenizer, "tokenizer", self.tokenizer)
         logger.info("Tokenizer type: %s  raw_tok type: %s", type(self.tokenizer).__name__, type(raw_tok).__name__)
         streamer = TextIteratorStreamer(
@@ -173,6 +298,10 @@ class InferenceBackend:
         #   do_sample = temperature > 0  (temperature=0 → greedy, >0 → sampling)
         #   eos_token_id = tokenizer.eos_token_id  (single value, not overriding list)
         #   All sampling params always passed (transformers handles them correctly)
+        # For VLM models, eos/pad token ids live on the inner text tokenizer
+        eos_id  = getattr(raw_tok, "eos_token_id",  None) or getattr(self.tokenizer, "eos_token_id",  None)
+        pad_id  = getattr(raw_tok, "pad_token_id",  None) or getattr(self.tokenizer, "pad_token_id",  None) or eos_id
+
         generation_kwargs = dict(
             **inputs,
             streamer=streamer,
@@ -183,12 +312,8 @@ class InferenceBackend:
             min_p=min_p,
             repetition_penalty=repetition_penalty,
             do_sample=temperature > 0,
-            eos_token_id=self.tokenizer.eos_token_id,
-            pad_token_id=(
-                self.tokenizer.pad_token_id
-                if self.tokenizer.pad_token_id is not None
-                else self.tokenizer.eos_token_id
-            ),
+            eos_token_id=eos_id,
+            pad_token_id=pad_id,
         )
 
         logger.info(

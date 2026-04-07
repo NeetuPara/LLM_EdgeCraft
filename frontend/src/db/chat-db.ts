@@ -16,6 +16,7 @@ export interface Message {
   timestamp: number
   modelName?: string
   streaming?: boolean
+  imageDataUrl?: string   // base64 data URL for image attached by user (vision models)
 }
 
 class ChatDatabase extends Dexie {
@@ -26,6 +27,11 @@ class ChatDatabase extends Dexie {
     super('unslothcraft-chat')
     this.version(1).stores({
       threads: 'id, updatedAt',
+      messages: 'id, threadId, timestamp',
+    })
+    // v2: add modelName index so RunDetailScreen can query threads by model efficiently
+    this.version(2).stores({
+      threads: 'id, updatedAt, modelName',
       messages: 'id, threadId, timestamp',
     })
   }
