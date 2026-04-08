@@ -51,6 +51,17 @@ function modelDisplayName(path: string | null | undefined): string {
   return path.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? path
 }
 
+// ── Inline markdown: bold + inline-code only (no prefix stripping) ──
+function inlineParts(text: string): React.ReactNode[] {
+  return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**'))
+      return <strong key={i} className="text-slate-100 font-semibold">{part.slice(2, -2)}</strong>
+    if (part.startsWith('`') && part.endsWith('`'))
+      return <code key={i} className="bg-slate-800/80 text-cap-cyan text-[0.85em] px-1.5 py-0.5 rounded font-mono">{part.slice(1, -1)}</code>
+    return part
+  })
+}
+
 // ── Simple markdown renderer ──
 function renderMarkdown(text: string): React.ReactNode[] {
   const lines = text.split('\n')
@@ -95,25 +106,17 @@ function renderMarkdown(text: string): React.ReactNode[] {
       continue
     }
 
-    // Bold **text**
-    const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, i) => {
-      if (part.startsWith('**') && part.endsWith('**'))
-        return <strong key={i} className="text-slate-100 font-semibold">{part.slice(2, -2)}</strong>
-      if (part.startsWith('`') && part.endsWith('`'))
-        return <code key={i} className="bg-slate-800/80 text-cap-cyan text-[0.85em] px-1.5 py-0.5 rounded font-mono">{part.slice(1, -1)}</code>
-      return part
-    })
-
+    // Strip block-level prefix first, then apply inline formatting to the remainder
     if (line.startsWith('# '))
-      nodes.push(<h3 key={key++} className="text-lg font-bold text-slate-100 font-display mt-3 mb-1">{parts.slice(1)}</h3>)
+      nodes.push(<h3 key={key++} className="text-lg font-bold text-slate-100 font-display mt-3 mb-1">{inlineParts(line.slice(2))}</h3>)
     else if (line.startsWith('## '))
-      nodes.push(<h4 key={key++} className="text-base font-semibold text-slate-200 mt-2 mb-1">{parts.slice(1)}</h4>)
+      nodes.push(<h4 key={key++} className="text-base font-semibold text-slate-200 mt-2 mb-1">{inlineParts(line.slice(3))}</h4>)
     else if (line.startsWith('- ') || line.startsWith('* '))
-      nodes.push(<li key={key++} className="ml-4 text-slate-300 list-disc leading-relaxed">{parts.slice(1)}</li>)
-    else if (/^\d+\.\s/.test(line))
-      nodes.push(<li key={key++} className="ml-4 text-slate-300 list-decimal leading-relaxed">{parts.slice(1)}</li>)
+      nodes.push(<li key={key++} className="ml-4 text-slate-300 list-disc leading-relaxed">{inlineParts(line.slice(2))}</li>)
+    else if (/^\d+\.\s+/.test(line))
+      nodes.push(<li key={key++} className="ml-4 text-slate-300 list-decimal leading-relaxed">{inlineParts(line.replace(/^\d+\.\s+/, ''))}</li>)
     else
-      nodes.push(<p key={key++} className="text-slate-300 leading-relaxed">{parts}</p>)
+      nodes.push(<p key={key++} className="text-slate-300 leading-relaxed">{inlineParts(line)}</p>)
   }
 
   if (inCode) flushCode()
@@ -1019,17 +1022,11 @@ export default function ChatScreen() {
     [], [] as Thread[],
   )
 
-  // Load messages when thread changes (also sync both compare panels when in compare mode)
+  // Load messages when active thread changes (single mode only)
   useEffect(() => {
     if (!activeThreadId) { setMessages([]); return }
-    getMessages(activeThreadId).then(msgs => {
-      setMessages(msgs)
-      if (compareMode) {
-        setLeftCompareMessages(msgs)
-        setRightCompareMessages(msgs)
-      }
-    })
-  }, [activeThreadId, compareMode])
+    getMessages(activeThreadId).then(setMessages)
+  }, [activeThreadId])
 
   // On mount: sync store with real backend state.
   // If backend was restarted, clear stale loadedModel so user must re-select.
@@ -1045,6 +1042,9 @@ export default function ChatScreen() {
     const thread = await createThread(loadedModel ?? undefined)
     setActiveThreadId(thread.id)
     setMessages([])
+    // New chat always resets all panels regardless of mode
+    setLeftCompareMessages([])
+    setRightCompareMessages([])
   }
 
   const handleSelectThread = async (id: string) => {
@@ -1500,7 +1500,7 @@ export default function ChatScreen() {
                   !compareMode ? 'bg-slate-700/60 text-slate-200' : 'text-slate-500 hover:text-slate-300')}>
                 <MessageSquare size={11} /> Single
               </button>
-              <button onClick={() => { setCompareMode(true); setLeftCompareMessages(messages); setRightCompareMessages(messages) }}
+              <button onClick={() => setCompareMode(true)}
                 className={cn('flex items-center gap-1.5 px-3 py-1.5 transition-colors',
                   compareMode ? 'bg-indigo-500/20 text-indigo-300' : 'text-slate-500 hover:text-slate-300')}>
                 <Columns2 size={11} /> Compare
