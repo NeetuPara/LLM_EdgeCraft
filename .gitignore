@@ -37,3 +37,11 @@ ENV/
 .vscode/
 *.swp
 .DS_Store
+
+# Machine Learning Models (Too Large)
+*.gguf
+*.tflite
+*.safetensors
+*.bin
+*.pth
+*.pt

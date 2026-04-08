@@ -1,0 +1,18 @@
+{
+  "base_model": "HuggingFaceTB/SmolVLM-500M-Instruct",
+  "system_prompt": "You are a solar panel inspection expert. Analyze the solar panel image and answer the question briefly.",
+  "custom_format_mapping": {
+    "image": "image",
+    "multiple_choice_answer": "output",
+    "question": "input"
+  },
+  "is_vlm": true,
+  "image_column": "image",
+  "inference": {
+    "temperature": 0,
+    "max_tokens": 512,
+    "repetition_penalty": 1.1,
+    "top_p": 0.9,
+    "top_k": 40
+  }
+}
