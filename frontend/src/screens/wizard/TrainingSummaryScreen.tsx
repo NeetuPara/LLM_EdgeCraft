@@ -237,7 +237,7 @@ export default function TrainingSummaryScreen() {
   return (
     <WizardShell
       step={4}
-      title="Ready to Launch"
+      title="Launch"
       description="Review your configuration and start training."
       onBack={() => navigate('/new/params')}
       onNext={handleLaunch}

@@ -446,7 +446,7 @@ export default function DatasetScreen() {
   return (
     <WizardShell
       step={2}
-      title="Configure Dataset"
+      title="Data Preparation"
       description="Choose the dataset you want to use for fine-tuning."
       onBack={() => navigate('/new/model')}
       onNext={() => { setHighestStep(2); navigate('/new/params') }}

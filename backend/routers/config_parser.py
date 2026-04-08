@@ -32,6 +32,8 @@ _INFERENCE_KEY_MAP: dict[str, str] = {
     "repetition_penalty":   "repetitionPenalty",
     "rep_penalty":          "repetitionPenalty",
     "repeat_penalty":       "repetitionPenalty",
+    "system_prompt":        "systemPrompt",
+    "system":               "systemPrompt",
     # greedy=true → temperature=0; greedy=false → leave temperature as-is
     # (handled in the endpoint below via special-case logic)
 }

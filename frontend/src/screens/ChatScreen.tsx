@@ -358,16 +358,12 @@ function ModelSelector({
     apiFetch<ExportedModel[]>('/api/models/exported').then(setExported).catch(() => setExported([]))
   }, [open])
 
-  // Filter by modelType
+  // Base models filtered by type; fine-tuned and exported models shown in all modes
   const filteredModels = models.filter(m =>
     modelType === 'vision' ? isVisionModel(m.name) : !isVisionModel(m.name)
   )
-  const filteredLoras = loras.filter(m =>
-    modelType === 'vision' ? isVisionModel(m.name) : !isVisionModel(m.name)
-  )
-  const filteredExported = exported.filter(m =>
-    modelType === 'vision' ? isVisionModel(m.name) : !isVisionModel(m.name)
-  )
+  const filteredLoras = loras
+  const filteredExported = exported
 
   useEffect(() => {
     if (!open) return

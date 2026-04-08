@@ -34,13 +34,13 @@ import { cn } from '@/utils/cn'
 type StageId = 'model' | 'dataset' | 'params' | 'launch' | 'training' | 'chat' | 'export'
 
 const STAGES: { id: StageId; label: string; title: string; description: string }[] = [
-  { id: 'model',    label: 'Model',    title: 'Select Your Model',    description: 'Base model and training approach used in this experiment.' },
-  { id: 'dataset',  label: 'Dataset',  title: 'Dataset',              description: 'Dataset configuration, column mapping, and system prompt.' },
-  { id: 'params',   label: 'Params',   title: 'Hyperparameters',      description: 'Training configuration and LoRA adapter settings.' },
-  { id: 'launch',   label: 'Launch',   title: 'Training Summary',     description: 'Full experiment configuration at the time of launch.' },
-  { id: 'training', label: 'Training', title: 'Training Progress',    description: 'Loss curves, GPU stats, and training metrics from this run.' },
-  { id: 'chat',     label: 'Chat',     title: 'Chat & Inference',     description: 'Conversations using this fine-tuned model.' },
-  { id: 'export',   label: 'Export',   title: 'Export Model',         description: 'Export your fine-tuned model in your preferred format.' },
+  { id: 'model',    label: 'Model Selection',  title: 'Model Selection',   description: 'Base model and training approach used in this experiment.' },
+  { id: 'dataset',  label: 'Data Preparation', title: 'Data Preparation',  description: 'Dataset configuration, column mapping, and system prompt.' },
+  { id: 'params',   label: 'Training Config',  title: 'Training Config',   description: 'Training configuration and LoRA adapter settings.' },
+  { id: 'launch',   label: 'Launch',           title: 'Launch',            description: 'Full experiment configuration at the time of launch.' },
+  { id: 'training', label: 'Craft',            title: 'Craft',             description: 'Loss curves, GPU stats, and training metrics from this run.' },
+  { id: 'chat',     label: 'Chat',             title: 'Chat & Inference',  description: 'Conversations using this fine-tuned model.' },
+  { id: 'export',   label: 'Export',           title: 'Export Model',      description: 'Export your fine-tuned model in your preferred format.' },
 ]
 
 // Training/Chat use max-w-5xl (matching their original screens); all others use max-w-3xl
@@ -715,8 +715,15 @@ function ReadOnlyBubble({ msg }: { msg: Message }) {
   return (
     <div className={cn('group mb-1', isUser ? 'flex justify-end' : 'flex justify-start')}>
       {isUser ? (
-        <div className="max-w-[72%] px-4 py-2.5 rounded-2xl rounded-tr-sm bg-cap-blue/25 border border-cap-blue/20 text-slate-200 text-sm">
-          {msg.content}
+        <div className="max-w-[72%] px-4 py-2.5 rounded-2xl rounded-tr-sm bg-cap-blue/25 border border-cap-blue/20 text-slate-200 text-sm space-y-2">
+          {msg.imageDataUrl && (
+            <img
+              src={msg.imageDataUrl}
+              alt="attached"
+              className="max-h-48 w-auto rounded-xl border border-white/10 object-contain block"
+            />
+          )}
+          {msg.content && <span>{msg.content}</span>}
         </div>
       ) : (
         <div className="w-full">

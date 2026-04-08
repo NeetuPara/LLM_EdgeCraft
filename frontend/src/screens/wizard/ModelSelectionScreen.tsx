@@ -155,7 +155,7 @@ export default function ModelSelectionScreen() {
   return (
     <WizardShell
       step={1}
-      title="Select Your Model"
+      title="Model Selection"
       description="Choose a base model and training approach."
       onNext={() => { setHighestStep(1); navigate('/new/dataset') }}
       nextDisabled={!canProceed}

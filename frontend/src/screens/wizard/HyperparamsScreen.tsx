@@ -268,7 +268,7 @@ export default function HyperparamsScreen() {
   return (
     <WizardShell
       step={3}
-      title="Hyperparameters"
+      title="Training Config"
       description="Tune your training settings. Defaults work well for most use cases."
       onBack={() => navigate('/new/dataset')}
       onNext={() => { setHighestStep(3); navigate('/new/summary') }}
