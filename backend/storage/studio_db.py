@@ -194,7 +194,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
     try:
         total = conn.execute("SELECT COUNT(*) FROM training_runs").fetchone()[0]
         rows = conn.execute(
-            "SELECT id, status, model_name, dataset_name, started_at, ended_at, "
+            "SELECT id, status, model_name, dataset_name, config_json, started_at, ended_at, "
             "total_steps, final_step, final_loss, output_dir, duration_seconds, "
             "error_message, loss_sparkline FROM training_runs ORDER BY started_at DESC LIMIT ? OFFSET ?",
             (limit, offset),

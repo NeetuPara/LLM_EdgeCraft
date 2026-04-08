@@ -1019,11 +1019,17 @@ export default function ChatScreen() {
     [], [] as Thread[],
   )
 
-  // Load messages when thread changes
+  // Load messages when thread changes (also sync both compare panels when in compare mode)
   useEffect(() => {
     if (!activeThreadId) { setMessages([]); return }
-    getMessages(activeThreadId).then(setMessages)
-  }, [activeThreadId])
+    getMessages(activeThreadId).then(msgs => {
+      setMessages(msgs)
+      if (compareMode) {
+        setLeftCompareMessages(msgs)
+        setRightCompareMessages(msgs)
+      }
+    })
+  }, [activeThreadId, compareMode])
 
   // On mount: sync store with real backend state.
   // If backend was restarted, clear stale loadedModel so user must re-select.
@@ -1045,6 +1051,11 @@ export default function ChatScreen() {
     setActiveThreadId(id)
     const msgs = await getMessages(id)
     setMessages(msgs)
+    // In compare mode, populate both panels with the selected thread's history
+    if (useChatStore.getState().compareMode) {
+      setLeftCompareMessages(msgs)
+      setRightCompareMessages(msgs)
+    }
   }
 
   const handleDeleteThread = async (id: string) => {
@@ -1489,7 +1500,7 @@ export default function ChatScreen() {
                   !compareMode ? 'bg-slate-700/60 text-slate-200' : 'text-slate-500 hover:text-slate-300')}>
                 <MessageSquare size={11} /> Single
               </button>
-              <button onClick={() => { setCompareMode(true) }}
+              <button onClick={() => { setCompareMode(true); setLeftCompareMessages(messages); setRightCompareMessages(messages) }}
                 className={cn('flex items-center gap-1.5 px-3 py-1.5 transition-colors',
                   compareMode ? 'bg-indigo-500/20 text-indigo-300' : 'text-slate-500 hover:text-slate-300')}>
                 <Columns2 size={11} /> Compare

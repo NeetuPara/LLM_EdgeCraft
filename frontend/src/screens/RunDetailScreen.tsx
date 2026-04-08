@@ -72,6 +72,37 @@ const fmt = {
   },
 }
 
+// Extract the user-given fine-tuned model name.
+// Priority:
+//  1. output_dir (actual saved folder path, set after training completes)
+//  2. config_json.output_dir (user-given name stored at launch time — works even if output_dir is null)
+//  3. Base model short name as last resort
+function getFineTunedName(run: RunDetail): string {
+  if (run.output_dir) {
+    const folder = run.output_dir.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? ''
+    if (folder) {
+      const clean = folder
+        .replace(/_\d{8}_\d{6}$/, '')   // strip _YYYYMMDD_HHMMSS
+        .replace(/_\d{10,13}$/, '')      // strip epoch timestamp
+      return clean || folder
+    }
+  }
+  // Fallback: user-given name from config_json (stored at launch, before output_dir is written)
+  try {
+    const c = JSON.parse(run.config_json ?? '{}') as Record<string, unknown>
+    if (c.output_dir) {
+      const name = String(c.output_dir).replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? ''
+      if (name) return name
+    }
+  } catch { /* ignore */ }
+  return run.model_name.split('/').pop() ?? run.model_name
+}
+
+function getDatasetName(name?: string): string {
+  if (!name) return '—'
+  return name.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? name
+}
+
 function threadMatchesRun(t: Thread, run: RunDetail) {
   const m = t.modelName ?? ''
   if (!m) return false
@@ -81,6 +112,9 @@ function threadMatchesRun(t: Thread, run: RunDetail) {
     const tail = run.output_dir.split(/[\\/]/).filter(Boolean).pop() ?? ''
     if (tail && m.includes(tail)) return true
   }
+  // Also match by the clean fine-tuned name (in case user loaded via short name)
+  const fineName = getFineTunedName(run)
+  if (fineName && m.includes(fineName)) return true
   return false
 }
 
@@ -90,7 +124,8 @@ function threadMatchesRun(t: Thread, run: RunDetail) {
 function StageModel({ run, cfg }: { run: RunDetail; cfg: Record<string, unknown> }) {
   const modelType    = String(cfg.model_type ?? cfg.modelType ?? 'text')
   const trainingType = String(cfg.training_type ?? 'qlora').toLowerCase()
-  const isVision = modelType === 'vision'
+  // is_dataset_image is the authoritative flag (set by frontend when modelType==='vision')
+  const isVision = !!cfg.is_dataset_image || modelType === 'vision'
   const isQLoRA  = trainingType.includes('qlora') || trainingType.includes('4bit') || cfg.load_in_4bit === true
   const isLoRA   = !isQLoRA && (trainingType.includes('lora') || trainingType.includes('full'))
 
@@ -169,7 +204,7 @@ function StageModel({ run, cfg }: { run: RunDetail; cfg: Record<string, unknown>
             <CheckCircle size={14} className="text-cap-cyan shrink-0" />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="font-medium text-cap-cyan truncate">{run.model_name.split('/').pop()}</span>
+                <span className="font-medium text-cap-cyan truncate">{getFineTunedName(run)}</span>
               </div>
               <p className="text-[10px] text-slate-500 mt-0.5">{run.model_name}</p>
             </div>
@@ -230,7 +265,7 @@ function StageDataset({ run, cfg }: { run: RunDetail; cfg: Record<string, unknow
         <div className="grid grid-cols-2 gap-4">
           <div className="col-span-2">
             <label className="text-xs text-slate-500 mb-1.5 block">Dataset</label>
-            <div className="glass-input py-2.5 text-sm text-slate-200">{run.dataset_name}</div>
+            <div className="glass-input py-2.5 text-sm text-slate-200">{getDatasetName(run.dataset_name)}</div>
           </div>
           {cfg.format_type && (
             <div>
@@ -449,10 +484,11 @@ function StageLaunch({ run, cfg }: { run: RunDetail; cfg: Record<string, unknown
   const effBatch = Number(g('batch_size') ?? 2) * Number(g('gradient_accumulation_steps') ?? 4)
 
   const rows = [
-    { label: 'Model',           value: run.model_name },
+    { label: 'Fine-tuned Name',  value: getFineTunedName(run) },
+    { label: 'Base Model',       value: run.model_name },
     { label: 'Type',            value: isVlm ? 'Vision (VLM)' : 'Text' },
     { label: 'Method',          value: String(g('training_type') ?? 'QLoRA') },
-    { label: 'Dataset',         value: run.dataset_name },
+    { label: 'Dataset',         value: getDatasetName(run.dataset_name) },
     { label: 'Format',          value: g('format_type') },
     { label: 'Epochs',          value: g('num_epochs') },
     { label: 'Learning Rate',   value: g('learning_rate') },
@@ -608,7 +644,7 @@ function StageTraining({ run }: { run: RunDetail }) {
           <div>
             <div className="flex items-center gap-2.5 mb-1">
               <CheckCircle size={16} className="text-emerald-400" />
-              <span className="text-base font-bold text-slate-100">{run.model_name.split('/').pop()}</span>
+              <span className="text-base font-bold text-slate-100">{getFineTunedName(run)}</span>
               <span className="text-sm text-slate-400 hidden md:block">{run.model_name}</span>
             </div>
             <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
@@ -848,7 +884,7 @@ function StageChat({ run }: { run: RunDetail }) {
               <p className="text-slate-500 text-sm">
                 {matching.length > 0
                   ? 'Select a thread to review'
-                  : `No chats for ${run.model_name.split('/').pop()}`}
+                  : `No chats for ${getFineTunedName(run)}`}
               </p>
               {matching.length === 0 && (
                 <button
@@ -1179,7 +1215,8 @@ export default function RunDetailScreen() {
               <ArrowLeft size={12} /> Dashboard
             </button>
             <span className="text-slate-700">·</span>
-            <span className="font-mono text-slate-400">{run.model_name}</span>
+            <span className="font-semibold text-slate-300">{getFineTunedName(run)}</span>
+            <span className="text-slate-600 text-[10px] font-mono hidden sm:block">({run.model_name.split('/').pop()})</span>
             <CheckCircle size={11} className="text-emerald-400" />
             {run.final_loss != null && <span className="text-cap-cyan font-semibold">Loss {run.final_loss.toFixed(4)}</span>}
             <span className="ml-auto flex items-center gap-1"><Clock size={10} />{fmt.date(run.started_at)}</span>

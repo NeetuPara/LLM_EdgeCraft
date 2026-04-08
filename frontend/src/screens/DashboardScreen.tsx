@@ -43,6 +43,42 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 
+// ── Extract fine-tuned model display name ──
+// Priority:
+//  1. output_dir (actual saved folder, set after training completes)
+//  2. config_json.output_dir (user-given name, available even while running)
+//  3. Base model short name as last resort
+function getRunDisplayName(run: TrainingRun): string {
+  if (run.output_dir) {
+    const folder = run.output_dir.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? ''
+    if (folder) {
+      // Strip auto-generated timestamp suffix: _20260407_101900 or _1743866800
+      const clean = folder
+        .replace(/_\d{8}_\d{6}$/, '')   // _YYYYMMDD_HHMMSS
+        .replace(/_\d{10,13}$/, '')      // epoch seconds/ms
+      return clean || folder
+    }
+  }
+  // Fallback: user-given name stored in config_json (available before output_dir is set)
+  if (run.config_json) {
+    try {
+      const c = JSON.parse(run.config_json)
+      if (c.output_dir) {
+        const name = String(c.output_dir).replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? ''
+        if (name) return name
+      }
+    } catch { /* ignore */ }
+  }
+  // Last resort: just the last component of the HF model path
+  return (run.model_name || 'Unknown Model').split('/').pop() ?? run.model_name
+}
+
+// ── Extract clean dataset name (no full path) ──
+function getDatasetDisplayName(datasetName?: string): string {
+  if (!datasetName) return ''
+  return datasetName.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? datasetName
+}
+
 // ── Duration formatter ──
 function formatDuration(seconds?: number): string {
   if (!seconds) return '—'
@@ -315,7 +351,7 @@ export default function DashboardScreen() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-semibold text-slate-200 text-sm truncate">
-                          {run.model_name || 'Unknown Model'}
+                          {getRunDisplayName(run)}
                         </span>
                         {run.config_json && (() => {
                           try {
@@ -333,7 +369,7 @@ export default function DashboardScreen() {
                           <>
                             <span className="flex items-center gap-1">
                               <Database size={11} />
-                              {run.dataset_name}
+                              {getDatasetDisplayName(run.dataset_name)}
                             </span>
                             <span className="w-1 h-1 rounded-full bg-slate-700" />
                           </>

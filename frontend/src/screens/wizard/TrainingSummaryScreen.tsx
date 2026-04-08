@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
   Brain, Database, Settings, Edit2, Rocket,
-  CheckCircle, Cpu, Clock,
+  CheckCircle, Cpu, Clock, Tag,
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import WizardShell from './WizardShell'
@@ -246,6 +246,31 @@ export default function TrainingSummaryScreen() {
       nextDisabled={!canLaunch}
     >
       <div className="space-y-4">
+
+        {/* ── Fine-tuned Model Name ── */}
+        <motion.div initial={{ opacity: 1, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0 }}>
+          <div className="glass-card p-5 border-l-2 border-l-cap-cyan">
+            <div className="flex items-center gap-2.5 mb-3">
+              <div className="p-2 rounded-lg bg-cap-cyan/10">
+                <Tag size={15} className="text-cap-cyan" />
+              </div>
+              <h3 className="text-sm font-semibold text-slate-200">Fine-tuned Model Name</h3>
+              <span className="ml-auto text-[10px] text-slate-500">Used as folder name in outputs/</span>
+            </div>
+            <input
+              value={config.outputModelName}
+              onChange={e => config.patch({ outputModelName: e.target.value })}
+              placeholder={`e.g. ${config.modelName ? config.modelName.split('/').pop() + '_finetuned' : 'my_model_finetuned'}`}
+              className="glass-input text-sm py-2.5 font-mono w-full"
+            />
+            <p className="text-[10px] mt-1.5">
+              {config.outputModelName.trim()
+                ? <span className="text-slate-400">Saved to: <span className="font-mono text-cap-cyan">~/.unslothcraft/outputs/{config.outputModelName.trim().replace(/[^\w\-.]/g, '_')}/</span></span>
+                : <span className="text-slate-600">Leave blank to auto-name from model + timestamp</span>
+              }
+            </p>
+          </div>
+        </motion.div>
 
         {/* ── Config cards ── */}
         <motion.div initial={{ opacity: 1, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
