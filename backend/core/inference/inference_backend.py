@@ -304,15 +304,30 @@ class InferenceBackend:
         else:
             logger.info("Using real image for VLM inference: size=%s", image.size)
 
-        # Normalise messages to VLM format
+        # Normalise messages to VLM format.
+        # CRITICAL: insert {"type":"image"} in the message that CONTAINS the image_url,
+        # NOT always in the first user turn.
+        #
+        # Why this matters for multi-turn single mode:
+        #   Turn 1: user asks about burned panel (image_url present) → <image> token here ✓
+        #   Turn 3: user uploads new snow panel (image_url present) → <image> token here ✓
+        #   If we always put the token in turn 1, the new image is wrongly associated
+        #   with turn 1's old question, causing the model to answer using old context.
         vlm_messages = []
         image_inserted = False
+        fallback_user_idx: int = -1   # index of first user turn (fallback if no image found)
 
-        for msg in messages:
+        for i, msg in enumerate(messages):
             role = msg.get("role", "user")
             if role == "system":
-                continue   # inject system prompt into first user message below
+                continue
             content = msg.get("content", "")
+
+            # Check if THIS specific message contains an image
+            msg_has_image = isinstance(content, list) and any(
+                isinstance(p, dict) and p.get("type") in ("image", "image_url")
+                for p in content
+            )
 
             # Extract plain text from multimodal content
             if isinstance(content, list):
@@ -327,10 +342,13 @@ class InferenceBackend:
             if role == "user" and system_prompt and system_prompt.strip() and not vlm_messages:
                 text = f"{system_prompt}\n\n{text}" if text else system_prompt
 
-            # ALWAYS insert {"type":"image"} in the first user turn.
-            # SmolVLM (Idefics3) requires exactly 1 image token in the text to match
-            # the 1 image in the images=[[...]] list — even when using a placeholder.
-            if role == "user" and not image_inserted:
+            # Insert image token in the message that has the image.
+            # Fallback: if no message explicitly has image_url (placeholder case),
+            # insert in the LAST user message (current turn) for correct context.
+            if role == "user" and fallback_user_idx == -1:
+                fallback_user_idx = len(vlm_messages)
+
+            if role == "user" and msg_has_image and not image_inserted:
                 vlm_messages.append({
                     "role": "user",
                     "content": [{"type": "image"}, {"type": "text", "text": text}],
@@ -341,6 +359,22 @@ class InferenceBackend:
                     "role": role,
                     "content": [{"type": "text", "text": text}],
                 })
+
+        # Fallback: no message had image_url (placeholder case) → insert image token
+        # in the LAST user message so the current question is associated with the image.
+        if not image_inserted and vlm_messages:
+            last_user_idx = max(
+                (j for j, m in enumerate(vlm_messages) if m.get("role") == "user"),
+                default=-1,
+            )
+            if last_user_idx >= 0:
+                old = vlm_messages[last_user_idx]["content"]
+                old_text = old[0]["text"] if isinstance(old, list) else str(old)
+                vlm_messages[last_user_idx] = {
+                    "role": "user",
+                    "content": [{"type": "image"}, {"type": "text", "text": old_text}],
+                }
+                image_inserted = True
 
         if not vlm_messages:
             vlm_messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "Describe this image."}]}]

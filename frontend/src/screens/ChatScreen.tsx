@@ -774,12 +774,15 @@ function ChatPanel({
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const input = sharedInput !== undefined ? sharedInput : localInput
   const setInput = setSharedInput ?? setLocalInput
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollAreaRef = useRef<HTMLDivElement>(null)
   const inputId = useId()
   const imageRef = useRef<HTMLInputElement>(null)
 
+  // Scroll to bottom whenever messages change or a streaming message grows.
+  // Direct scrollTop is more reliable than scrollIntoView inside a flex/overflow container.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = scrollAreaRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [messages.length, messages[messages.length - 1]?.content?.length])
 
   const handleSend = () => {
@@ -792,7 +795,7 @@ function ChatPanel({
   }
 
   return (
-    <div className="flex-1 flex flex-col min-w-0">
+    <div className="flex-1 flex flex-col min-w-0 min-h-0">
       {/* Model label (compare mode) */}
       {isCompare && (
         <div className="px-4 py-2 border-b border-white/[0.06] bg-slate-900/20">
@@ -802,8 +805,8 @@ function ChatPanel({
         </div>
       )}
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4">
+      {/* Messages — scroll container. min-h-0 prevents flex child from growing past parent */}
+      <div ref={scrollAreaRef} className="flex-1 overflow-y-auto min-h-0 px-6 py-6 space-y-4">
         {messages.length === 0 && (
           <div className="h-full flex items-center justify-center">
             <div className="text-center space-y-3">
@@ -819,7 +822,6 @@ function ChatPanel({
         {messages.map(msg => (
           <MessageBubble key={msg.id} msg={msg} modelName={!isCompare ? modelName : modelName} />
         ))}
-        <div ref={bottomRef} />
       </div>
 
       {/* Input — floating card style */}
@@ -995,6 +997,14 @@ export default function ChatScreen() {
   const [leftCompareMessages,  setLeftCompareMessages]  = useState<Message[]>([])
   const [rightCompareMessages, setRightCompareMessages] = useState<Message[]>([])
   const [compareMessages, setCompareMessages] = useState<Message[]>([])  // kept for compat
+
+  // Refs so handleCompareSend always reads CURRENT messages without stale closures.
+  // useCallback with [] deps captures the initial empty [] — these refs fix that.
+  const leftCompareMessagesRef  = useRef<Message[]>([])
+  const rightCompareMessagesRef = useRef<Message[]>([])
+  useEffect(() => { leftCompareMessagesRef.current  = leftCompareMessages  }, [leftCompareMessages])
+  useEffect(() => { rightCompareMessagesRef.current = rightCompareMessages }, [rightCompareMessages])
+
   const [compareInput, setCompareInput] = useState('')
   const [isLoadingModel, setIsLoadingModel] = useState(false)
   const [loadingStatus, setLoadingStatus] = useState('')
@@ -1256,10 +1266,16 @@ export default function ChatScreen() {
         .filter(m => m.role === 'user' || m.role === 'assistant')
         .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
 
-      // Current turn: if image attached, use multimodal content (OpenAI vision format)
-      const currentContent: unknown = imageDataUrl
+      // Image persistence: if no new image uploaded, re-use the last image from history.
+      // This lets the user ask follow-up questions ("what is the panel status?") without
+      // re-uploading the same image every time.
+      const effectiveImage = imageDataUrl
+        ?? [...targetMessages].reverse().find(m => m.role === 'user' && m.imageDataUrl)?.imageDataUrl
+
+      // Current turn: multimodal if image present, plain text otherwise
+      const currentContent: unknown = effectiveImage
         ? [
-            { type: 'image_url', image_url: { url: imageDataUrl } },
+            { type: 'image_url', image_url: { url: effectiveImage } },
             { type: 'text', text: text || '' },
           ]
         : text
@@ -1356,13 +1372,18 @@ export default function ChatScreen() {
     compareSlot: boolean,
     asstId: string,
     imageDataUrl?: string,
+    priorMsgs?: Message[],  // left/right history for image persistence
   ) => {
     // Add streaming assistant placeholder (user msg already added)
     const asstMsg: Message = { id: asstId, role: 'assistant', content: '', createdAt: Date.now() }
     setMsgs(prev => [...prev, asstMsg])
 
-    const currentContent: unknown = imageDataUrl
-      ? [{ type: 'image_url', image_url: { url: imageDataUrl } }, { type: 'text', text: text || '' }]
+    // Image persistence: re-use last uploaded image if no new one
+    const effectiveImage = imageDataUrl
+      ?? (priorMsgs ? [...priorMsgs].reverse().find(m => m.role === 'user' && m.imageDataUrl)?.imageDataUrl : undefined)
+
+    const currentContent: unknown = effectiveImage
+      ? [{ type: 'image_url', image_url: { url: effectiveImage } }, { type: 'text', text: text || '' }]
       : text
     const history = [{ role: 'user' as const, content: currentContent }]
     const body: Record<string, unknown> = {
@@ -1422,9 +1443,11 @@ export default function ChatScreen() {
     setLeftCompareMessages(prev  => [...prev,  leftUser])
     setRightCompareMessages(prev => [...prev, rightUser])
 
-    // Step 2: generate responses one by one (both models stay in VRAM)
-    await streamCompare(text, setLeftCompareMessages,  loadedModel,  false, `a-l-${ts}`, imageDataUrl)
-    await streamCompare(text, setRightCompareMessages, compareModel, true,  `a-r-${ts}`, imageDataUrl)
+    // Step 2: generate responses.
+    // Use refs (not state) for priorMsgs — state captured in useCallback closure is
+    // always the initial [] due to empty deps array. Refs always hold current value.
+    await streamCompare(text, setLeftCompareMessages,  loadedModel,  false, `a-l-${ts}`, imageDataUrl, leftCompareMessagesRef.current)
+    await streamCompare(text, setRightCompareMessages, compareModel, true,  `a-r-${ts}`, imageDataUrl, rightCompareMessagesRef.current)
   }, [sendMessage, messages, compareMessages, loadedModel, compareModel])
 
   return (
@@ -1441,8 +1464,8 @@ export default function ChatScreen() {
           onDelete={handleDeleteThread}
         />
 
-        {/* Main area */}
-        <div className="flex-1 flex flex-col min-w-0">
+        {/* Main area — min-h-0 is critical: without it flex children grow past h-screen */}
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
 
           {/* ── Top bar: type + mode + model selectors ── */}
           <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/[0.06] bg-slate-900/30 flex-wrap">
@@ -1466,7 +1489,7 @@ export default function ChatScreen() {
                   !compareMode ? 'bg-slate-700/60 text-slate-200' : 'text-slate-500 hover:text-slate-300')}>
                 <MessageSquare size={11} /> Single
               </button>
-              <button onClick={() => { setCompareMode(true); setLeftCompareMessages([]); setRightCompareMessages([]) }}
+              <button onClick={() => { setCompareMode(true) }}
                 className={cn('flex items-center gap-1.5 px-3 py-1.5 transition-colors',
                   compareMode ? 'bg-indigo-500/20 text-indigo-300' : 'text-slate-500 hover:text-slate-300')}>
                 <Columns2 size={11} /> Compare
